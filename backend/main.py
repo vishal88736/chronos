@@ -22,7 +22,7 @@ load_dotenv(BASE_DIR / ".env")
 
 import db  # noqa: E402
 from engine.context_sieve import ContextSieve, NodeSieveResult  # noqa: E402
-from engine.dag_planner import DAGPlanner  # noqa: E402
+from engine.dag_planner import DAGPlanner, clean_for_search  # noqa: E402
 from engine.hydrator import Hydrator  # noqa: E402
 from engine.promise_daemon import PromiseDaemon  # noqa: E402
 from engine.scraper_pool import ScraperPool  # noqa: E402
@@ -41,20 +41,16 @@ from schemas import (  # noqa: E402
     FocusResponse,
     HelloEvent,
     HydrationEvent,
-    HydrationPayload,
     MemoryEntity,
     NodeAddedEvent,
     NodeStatus,
     NodeUpdateEvent,
-    NudgeEvent,
     NudgePayload,
     PromiseCaughtEvent,
-    PromiseUpdatedEvent,
     ResolveResponse,
     SieveMetricsEvent,
     SimulateMutationRequest,
     SimulateMutationResponse,
-    SourceChunk,
     SpeculateRequest,
     SpeculateResponse,
     StateResponse,
@@ -256,6 +252,15 @@ async def _execute_retrieval(
     detail_bits: list[str] = []
     if retrieval.cached:
         detail_bits.append(f"epistemic cache · {retrieval.cache_age_seconds}s old")
+    if (
+        not retrieval.cached
+        and retrieval.urls_attempted > 0
+        and retrieval.fetched_count == 0
+    ):
+        node_result.needs_healing = True
+        node_result.healing_reason = (
+            f"all {retrieval.urls_attempted} target URLs timed out or were blocked"
+        )
     if node_result.needs_healing and not is_retry:
         reason = node_result.healing_reason or "weak evidence"
         await emit(
@@ -380,6 +385,12 @@ async def speculate(payload: SpeculateRequest) -> SpeculateResponse:
 
     primary = predicted[0]
     warmed, saved_ms = await speculation.ensure_started(primary)
+    # Warm the second candidate too; this is deliberately non-blocking. The
+    # primary query is what the endpoint reports on, while the secondary warms
+    # in the background for a related follow-up branch.
+    for secondary in predicted[1:2]:
+        if secondary != primary:
+            await speculation.ensure_started(secondary)
     return SpeculateResponse(
         matched_entities=entities,
         predicted_queries=predicted,
@@ -457,15 +468,16 @@ async def chat_stream(payload: ChatRequest) -> StreamingResponse:
                 )
             )
 
+            research_query = clean_for_search(payload.message) or payload.message
             contradiction_task = _track_background(
                 asyncio.create_task(
-                    synthesizer.detect_contradictions(payload.message, metrics.sources),
+                    synthesizer.detect_contradictions(research_query, metrics.sources),
                     name="chronos-contradictions",
                 )
             )
 
             answer = ""
-            async for delta in synthesizer.stream_answer(payload.message, metrics.sources):
+            async for delta in synthesizer.stream_answer(research_query, metrics.sources):
                 answer += delta
                 yield _sse(TokenEvent(delta=delta))
             if not answer:

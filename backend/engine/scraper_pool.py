@@ -62,6 +62,7 @@ class RetrievalResult:
     errors: list[str] = field(default_factory=list)
     cache_age_seconds: int = 0
     search_results: int = 0
+    fetched_count: int = 0
 
 
 class ScraperPool:
@@ -109,12 +110,22 @@ class ScraperPool:
         raw_chunks: list[dict[str, Any]] = []
         scrape_errors: list[str] = []
         urls_attempted = 0
+        fetched_count = 0
 
         if results:
             urls_attempted = len(results)
             fetched = await self._scrape_results(results, query)
             for result, page in zip(results, fetched):
-                text = page.get("text") or result.snippet
+                page_text = page.get("text") or ""
+                snippet = result.snippet.strip()
+                if page_text:
+                    fetched_count += 1
+                text = page_text or snippet
+                # JavaScript-heavy documentation pages often expose almost no body
+                # text to a 1.8s scraper. The search snippet is a better evidence
+                # fallback than a 12-word "Overview" card.
+                if page_text and snippet and len(page_text.split()) < 90 and len(snippet.split()) > len(page_text.split()):
+                    text = f"{snippet}\n{page_text}"
                 if not text or len(text.split()) < 8:
                     scrape_errors.append(f"{result.url}: empty content")
                     continue
@@ -171,6 +182,7 @@ class ScraperPool:
             urls_attempted=urls_attempted,
             errors=errors,
             search_results=len(results),
+            fetched_count=fetched_count,
         )
 
     # ── Search providers ─────────────────────────────────────────────────────
@@ -198,7 +210,7 @@ class ScraperPool:
                         for task in tasks:
                             if not task.done():
                                 task.cancel()
-                        return results[:MAX_SEARCH_RESULTS], premium_tasks[0][0], errors
+                        return results[:MAX_SEARCH_RESULTS], results[0].provider, errors
             except asyncio.TimeoutError:
                 errors.append("premium search providers timed out")
             finally:

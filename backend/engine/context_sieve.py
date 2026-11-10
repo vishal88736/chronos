@@ -59,6 +59,7 @@ class NodeSieveResult:
     node_id: str
     query: str
     raw_tokens: int = 0
+    candidate_tokens: int = 0
     total_words: int = 0
     chunk_count: int = 0
     peak_bm25: float = 0.0
@@ -110,6 +111,7 @@ class ContextSieve:
                         "token_count": estimate_tokens(chunk),
                     }
                 )
+                result.candidate_tokens += estimate_tokens(chunk)
                 if len(candidates) >= MAX_CHUNKS_PER_NODE:
                     break
             if len(candidates) >= MAX_CHUNKS_PER_NODE:
@@ -166,7 +168,8 @@ class ContextSieve:
     def assemble(self, results: list[NodeSieveResult], limit: int = 8) -> SieveMetrics:
         all_chunks: list[dict[str, Any]] = []
         seen_text: set[str] = set()
-        raw_tokens = sum(result.raw_tokens for result in results)
+        raw_doc_tokens = sum(result.raw_tokens for result in results)
+        normalized_tokens = sum(result.candidate_tokens for result in results)
         total_words = sum(result.total_words for result in results)
         for result in results:
             for chunk in result.chunks:
@@ -178,7 +181,28 @@ class ContextSieve:
                 seen_text.add(fingerprint)
                 all_chunks.append(chunk)
         all_chunks.sort(key=lambda chunk: float(chunk.get("bm25_score", 0.0)), reverse=True)
-        selected = all_chunks[:limit]
+
+        # Prefer diverse evidence over near-duplicate overlapping chunks. This
+        # prevents one verbose source from consuming the entire 8-chunk budget.
+        selected: list[dict[str, Any]] = []
+        selected_token_sets: list[set[str]] = []
+        for chunk in all_chunks:
+            tokens = set(tokenize(str(chunk["text"])))
+            too_similar = False
+            for existing in selected_token_sets:
+                if not tokens or not existing:
+                    continue
+                overlap = len(tokens & existing) / max(1, min(len(tokens), len(existing)))
+                if overlap > 0.62:
+                    too_similar = True
+                    break
+            if too_similar:
+                continue
+            selected.append(chunk)
+            selected_token_sets.append(tokens)
+            if len(selected) >= limit:
+                break
+
         sources: list[SourceChunk] = []
         for index, chunk in enumerate(selected, start=1):
             sources.append(
@@ -193,6 +217,7 @@ class ContextSieve:
                 )
             )
         sieved_tokens = sum(source.token_count for source in sources)
+        raw_tokens = max(raw_doc_tokens, normalized_tokens, sieved_tokens)
         compression = 0.0
         if raw_tokens > 0:
             compression = max(0.0, min(100.0, round((1 - sieved_tokens / raw_tokens) * 100, 1)))

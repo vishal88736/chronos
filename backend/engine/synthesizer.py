@@ -117,57 +117,64 @@ class Synthesizer:
     ) -> AsyncIterator[str]:
         """Deterministic, retrieval-grounded fallback used when no LLM is available."""
         query_tokens = set(re.findall(r"[a-z0-9]+", query.lower()))
-        sentences: list[tuple[int, str]] = []
+        noise = re.compile(
+            r"(this issue is blocked by upstream|added a commit that references|"
+            r"^platform:\s|reported in electron|copy link|sign in to view|"
+            r"join the discussion|skip to content|all rights reserved)",
+            re.IGNORECASE,
+        )
+        selected: list[tuple[int, str]] = []
+        seen_urls: set[str] = set()
         for index, source in enumerate(sources, start=1):
-            candidates = re.split(r"(?<=[.!?])\s+", source.text)
-            ranked: list[tuple[int, str]] = []
-            for sentence in candidates:
+            if source.url in seen_urls:
+                continue
+            seen_urls.add(source.url)
+            candidates: list[tuple[int, str]] = []
+            for sentence in re.split(r"(?<=[.!?])\s+", source.text):
                 clean = " ".join(sentence.split()).strip()
-                if len(clean) < 45:
+                if len(clean) < 45 or len(clean) > 520 or noise.search(clean):
                     continue
                 tokens = set(re.findall(r"[a-z0-9]+", clean.lower()))
                 overlap = len(tokens & query_tokens)
                 version_bonus = 2 if re.search(r"\b\d+(?:\.\d+){1,2}\b", clean) else 0
-                ranked.append((overlap + version_bonus, clean))
-            ranked.sort(key=lambda item: item[0], reverse=True)
-            chosen = ranked[:2] if index <= 4 else ranked[:1]
-            for _, sentence in chosen:
-                clipped = sentence[:420].rstrip()
+                status_bonus = (
+                    1
+                    if re.search(r"\b(fixed|patch|leak|issue|release|benchmark|latency|persists?)\b", clean, re.IGNORECASE)
+                    else 0
+                )
+                candidates.append((overlap * 2 + version_bonus + status_bonus, clean))
+            candidates.sort(key=lambda item: item[0], reverse=True)
+            if not candidates:
+                excerpt = " ".join(source.text.split())[:320].rstrip(" .")
+                if excerpt:
+                    candidates = [(0, f"{excerpt}.")]
+            for _, sentence in candidates[:1]:
+                clipped = sentence[:460].rstrip()
                 if not clipped.endswith((".", "!", "?")):
                     clipped += "."
-                sentences.append((index, clipped))
-            if len(sentences) >= 7:
+                selected.append((index, clipped))
+            if len(selected) >= 5:
                 break
 
-        if not sentences:
-            for index, source in enumerate(sources[:4], start=1):
-                excerpt = " ".join(source.text.split())[:360].rstrip(" .")
-                sentences.append((index, f"{excerpt}."))
+        if not selected:
+            async for piece in self._stream_pieces(
+                "No readable evidence survived the context sieve, so there is no grounded "
+                "answer to give. The branch telemetry will show whether a retry was attempted."
+            ):
+                yield piece
+            return
 
-        intro = (
-            "Here is what the retrieved evidence supports"
-            + (f" for “{query[:120]}”" if query else "")
-            + ". The strongest passages are cited inline"
-            if sentences
-            else ""
-        )
-        async for piece in self._stream_pieces(intro + "\n\n"):
+        intro = "Based on the retrieved evidence, strongest sources first:\n\n"
+        async for piece in self._stream_pieces(intro):
             yield piece
-
-        grouped: list[tuple[int, list[str]]] = []
-        for index, sentence in sentences:
-            if grouped and grouped[-1][0] == index:
-                grouped[-1][1].append(sentence)
-            else:
-                grouped.append((index, [sentence]))
-        for index, group in grouped:
-            text = " ".join(group) + f" [src_{index}]\n"
-            async for piece in self._stream_pieces(text):
+        for index, sentence in selected:
+            async for piece in self._stream_pieces(f"{sentence} [src_{index}]\n"):
                 yield piece
 
         caveat = (
-            "\nThis is an extractive synthesis of the retrieved passages, not an independent "
-            "verification; check source-specific version claims before acting."
+            "\nThis is an extractive synthesis, not independent verification. "
+            "A configured LLM key produces a denser, contradiction-aware narrative from the "
+            "same provenance."
         )
         async for piece in self._stream_pieces(caveat):
             yield piece

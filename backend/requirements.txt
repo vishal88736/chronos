@@ -5,6 +5,9 @@ httpx==0.27.2
 beautifulsoup4==4.12.3
 rank-bm25==0.2.2
 duckduckgo-search==6.2.13
+# Transitive pin: newer primp releases removed impersonate profiles used by
+# duckduckgo-search 6.2.13, which breaks the zero-key provider before fallback.
+primp==0.10.0
 openai==1.51.0
 pydantic==2.9.2
 python-dotenv==1.0.1

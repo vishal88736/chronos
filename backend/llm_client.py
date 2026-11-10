@@ -46,8 +46,8 @@ def _extract_json(content: str) -> Any | None:
         text = fence.group(1).strip()
     try:
         return json.loads(text)
-    except json.JSONDecodeError:
-        pass
+    except json.JSONDecodeError as exc:
+        logger.debug("JSON response was not directly parseable: %s", exc)
     starts = [index for index in (text.find("{"), text.find("[")) if index >= 0]
     if not starts:
         return None

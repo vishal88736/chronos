@@ -16,7 +16,6 @@ import random
 import re
 import time
 import uuid
-from datetime import datetime, timezone
 from typing import Any
 from urllib.parse import urlparse
 
@@ -44,6 +43,9 @@ _TRIGGER_PATTERN = re.compile(
 _RECIPIENT_PATTERN = re.compile(
     r"\b(?:promised|told|messaged|pinged|update|send\s+(?:it\s+)?to|sent\s+to)\s+"
     r"([A-Z][a-zA-Z'\-]{1,30})\b"
+)
+_RECIPIENT_VERB_PATTERN = re.compile(
+    r"\b(?:email|message|ping|notify)\s+([A-Z][a-zA-Z'\-]{1,30})\b"
 )
 _ACTION_AFTER_PROMISE = re.compile(
     r"\b(?:i\s+promised\s+[A-Z][a-zA-Z'\-]{1,30}\s+(?:that\s+)?)?"
@@ -117,7 +119,7 @@ class PromiseDaemon:
             try:
                 await self._task
             except asyncio.CancelledError:
-                pass
+                logger.debug("promise watcher cancellation acknowledged")
             self._task = None
             logger.info("promise watcher stopped")
 
@@ -137,9 +139,16 @@ class PromiseDaemon:
         if extracted is None:
             return None
 
-        watch_url = self._valid_url(extracted.get("watch_url")) or self._select_watch_url(
-            normalized_sources, str(extracted.get("trigger_condition", ""))
-        )
+        watch_url = self._valid_url(extracted.get("watch_url"))
+        source_urls = {
+            str(source.get("url", "")).strip()
+            for source in normalized_sources
+            if str(source.get("url", "")).startswith(("http://", "https://"))
+        }
+        if watch_url not in source_urls:
+            watch_url = self._select_watch_url(
+                normalized_sources, str(extracted.get("trigger_condition", ""))
+            )
         if not watch_url:
             logger.info("commitment detected but no watch URL was available")
             return None
@@ -147,6 +156,7 @@ class PromiseDaemon:
         recipient = " ".join(str(extracted.get("recipient") or "your team").split())[:120]
         promised_action = " ".join(str(extracted.get("promised_action") or "").split())[:400]
         trigger_condition = " ".join(str(extracted.get("trigger_condition") or "").split())[:400]
+        trigger_condition = self._expand_trigger(trigger_condition, user_message)
         if not promised_action or not trigger_condition:
             return None
         priority = self._clamp_int(extracted.get("priority"), 2)
@@ -193,7 +203,7 @@ class PromiseDaemon:
             return None
         source_context = "\n".join(
             f"- {source['url']} | {source['title']} | {source['text'][:500]}"
-            for source in sources[:5]
+            for source in sources[:8]
             if source.get("url")
         )
         payload = await self.llm.complete_json(
@@ -223,7 +233,7 @@ class PromiseDaemon:
         return parsed.model_dump()
 
     def _deterministic_extract_promise(self, message: str) -> dict[str, Any] | None:
-        recipient_match = _RECIPIENT_PATTERN.search(message)
+        recipient_match = _RECIPIENT_PATTERN.search(message) or _RECIPIENT_VERB_PATTERN.search(message)
         recipient = recipient_match.group(1) if recipient_match else "your team"
         action_match = _ACTION_AFTER_PROMISE.search(message) or _REMIND_ACTION.search(message)
         trigger_match = _TRIGGER_PATTERN.search(message)
@@ -247,11 +257,47 @@ class PromiseDaemon:
             "actor": "You",
             "recipient": recipient,
             "promised_action": action,
-            "trigger_condition": trigger,
+            "trigger_condition": self._expand_trigger(trigger, message),
             "priority": priority,
             "time_sensitivity": sensitivity,
             "watch_url": None,
         }
+
+    @staticmethod
+    def _expand_trigger(trigger: str, message: str) -> str:
+        """Resolve a dangling 'once Apple patches it' using the research subject."""
+        object_pronoun = re.search(
+            r"\b(?:patch|patches|patched|fix|fixes|fixed|resolve|resolves|resolved|"
+            r"ship|ships|shipped|release|releases|released|update|updates|updated|"
+            r"change|changes|changed|drop|drops|dropped)\s+(it)\b",
+            trigger,
+            flags=re.IGNORECASE,
+        )
+        if object_pronoun is None:
+            object_pronoun = re.search(r"\b(it)[.!?]?$", trigger, flags=re.IGNORECASE)
+        if object_pronoun is None:
+            # Relative clauses such as "a macOS update that fixes ..." are
+            # complete already. Only a dangling object "it" needs resolution.
+            return trigger
+
+        research_clause = re.split(r"\s*[—–]\s*", message, maxsplit=1)[0]
+        subject = re.search(
+            r"\b(?:fixed|fixes|patches?|patched|resolves?|resolved|ships?|releases?|"
+            r"updates?|drops?|changes?)\s+(?:the\s+)?(.+?)"
+            r"(?=\s+(?:once|when|after|until)\b|[.!?]|$)",
+            research_clause,
+            flags=re.IGNORECASE,
+        )
+        if subject is None:
+            return trigger
+        noun = subject.group(1).strip(" .,;:—–-")
+        noun = re.sub(r"\b(once|when|after|until)\b.*$", "", noun, flags=re.IGNORECASE).strip()
+        if not noun or len(noun) > 180:
+            return trigger
+        article = "" if re.match(r"^(the|a|an|my|our)\b", noun, re.IGNORECASE) else "the "
+        replacement = f"{article}{noun}"
+        start, end = object_pronoun.span(1)
+        return f"{trigger[:start]}{replacement}{trigger[end:]}"
 
     @staticmethod
     def _source_dict(source: SourceChunk | dict[str, Any]) -> dict[str, Any]:
@@ -272,15 +318,23 @@ class PromiseDaemon:
     @staticmethod
     def _select_watch_url(sources: list[dict[str, Any]], trigger: str) -> str | None:
         trigger_tokens = set(re.findall(r"[a-z0-9]+", trigger.lower()))
+        preferred_hosts: list[str] = []
+        if re.search(r"\bapple\b", trigger, re.IGNORECASE):
+            preferred_hosts.extend(["developer.apple.com", "support.apple.com"])
+        if re.search(r"\bgithub\b", trigger, re.IGNORECASE):
+            preferred_hosts.append("github.com")
         best_url: str | None = None
         best_score = -1.0
         for source in sources:
             url = str(source.get("url", "")).strip()
-            if not url.startswith(("http://", "https://")):
+            parsed = urlparse(url)
+            if parsed.scheme not in {"http", "https"} or not parsed.netloc:
                 continue
             text_tokens = set(re.findall(r"[a-z0-9]+", str(source.get("text", "")).lower()))
             semantic_overlap = len(trigger_tokens & text_tokens)
-            score = semantic_overlap * 10 + float(source.get("bm25_score", 0.0) or 0.0)
+            score = semantic_overlap + float(source.get("bm25_score", 0.0) or 0.0) * 1.5
+            if any(parsed.netloc == host or parsed.netloc.endswith(f".{host}") for host in preferred_hosts):
+                score += 12.0
             if score > best_score:
                 best_score = score
                 best_url = url
