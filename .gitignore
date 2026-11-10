@@ -1,0 +1,14 @@
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+backend/chronos.db
+backend/chronos.db-*
+backend/.env
+frontend/node_modules/
+frontend/.next/
+frontend/out/
+.DS_Store
+*.log
+.env
+!.env.example
