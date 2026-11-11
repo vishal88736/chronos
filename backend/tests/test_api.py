@@ -199,6 +199,11 @@ async def test_ambient_endpoint() -> None:
         payload = response.json()
         check("ambient payload present", "ambient" in payload, str(payload))
         check("ambient has a platform", bool(payload.get("platform")), str(payload))
+        check(
+            "the raw clipboard is never returned",
+            "clipboard" not in payload.get("ambient", {}),
+            str(payload.get("ambient", {}).keys()),
+        )
 
         speculate = await client.post(
             "/api/speculate",
@@ -283,6 +288,7 @@ async def test_get_sse_endpoint() -> None:
     hydration = next((e for e in events if e.get("type") == "HYDRATION"), None)
     if hydration is not None:
         check("hydration carries ambient context", "active_app" in hydration, str(hydration.keys()))
+        check("hydration carries prior queries", "prior_queries" in hydration, str(hydration.keys()))
     metrics = next((e for e in events if e.get("type") == "SIEVE_METRICS"), None)
     if metrics is not None:
         check("sieve reports stage timings", "stage_timings_ms" in metrics, str(metrics.keys()))

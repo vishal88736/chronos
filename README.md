@@ -213,6 +213,7 @@ Promise states: `WATCHING → QUEUED_QUIET ↔ NUDGED → RESOLVED`.
 ```text
 .
 ├── README.md
+├── design.md                   # system design & architecture
 ├── backend
 │   ├── .env.example
 │   ├── main.py                  # FastAPI app, SSE, orchestration, evaluator APIs
@@ -222,8 +223,8 @@ Promise states: `WATCHING → QUEUED_QUIET ↔ NUDGED → RESOLVED`.
 │   ├── events.py                # SSE broker and process-local focus state
 │   ├── requirements.txt
 │   ├── tests
-│   │   ├── test_engine.py       # 63 unit-level checks over the engine internals
-│   │   └── test_api.py          # 59 HTTP-surface checks over the live app
+│   │   ├── test_engine.py       # 76 unit-level checks over the engine internals
+│   │   └── test_api.py          # 61 HTTP-surface checks over the live app
 │   └── engine
 │       ├── hydrator.py          # local entity hydration + memory writeback
 │       ├── dag_planner.py       # prefetch, DAG planning, wave 2, branch rewrite
@@ -605,10 +606,10 @@ rm backend/chronos.db
 
 ## Verification performed
 
-- **122 automated checks pass**: `backend/.venv/bin/python -m tests.test_engine`
-  (63 checks over the cache, sieve, planner, LLM helpers, promise gate, ambient
-  sensor and auto-verification) and
-  `backend/.venv/bin/python -m tests.test_api` (59 checks over the live HTTP
+- **137 automated checks pass**: `backend/.venv/bin/python -m tests.test_engine`
+  (76 checks over the cache, sieve, planner, LLM helpers, promise gate, ambient
+  sensor, temporal memory and auto-verification) and
+  `backend/.venv/bin/python -m tests.test_api` (61 checks over the live HTTP
   surface, including the SSE event order, the GET `EventSource` endpoint, the
   ambient endpoint, the auto-verification simulation and the nudge-stream
   subscription cleanup).

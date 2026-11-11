@@ -382,6 +382,11 @@ async def test_ambient_sensor() -> None:
     context = await probe.detect()
     check("detection never raises", context is not None)
     check("context has a source", context.source in {"none", "manual", "macos", "linux"}, context.source)
+    check(
+        "the raw clipboard never leaves the sensor",
+        not hasattr(context, "clipboard"),
+        "clipboard field is still present on the context",
+    )
 
     manual = await probe.detect("VS Code — screen_capture_manager.swift")
     check("manual override wins", manual.app.startswith("VS Code"), manual.app)
@@ -389,6 +394,7 @@ async def test_ambient_sensor() -> None:
 
     terms = extract_terms(manual)
     check("terms are extracted from the title", any("screen_capture" in term for term in terms), str(terms))
+    check("the context carries its terms", manual.terms == terms, str(manual.terms))
 
     folded = fold_into_query("macOS memory leak status", terms)
     check("terms fold into the query", "screen_capture" in folded, folded)
@@ -439,6 +445,66 @@ async def test_auto_verification() -> None:
     )
 
 
+async def test_query_history() -> None:
+    print("\n[db] temporal memory of prior questions")
+    await db.init_db()
+    await db.prune_query_history(keep=0)
+
+    recorded = await db.record_query("Is the ScreenCaptureKit leak fixed?", 5)
+    check("query is recorded", recorded["id"].startswith("q_"), str(recorded))
+    check("query carries a timestamp", recorded["created_at"] > 0, str(recorded))
+    check("query carries the focus level", recorded["focus_level"] == 5, str(recorded))
+
+    await db.record_query("Compare FastAPI vs Go Fiber latency", 2)
+    recent = await db.recent_queries(limit=5)
+    check("prior queries are readable", len(recent) >= 2, str(len(recent)))
+    check(
+        "prior queries are newest first",
+        recent[0]["created_at"] >= recent[-1]["created_at"],
+        str([entry["created_at"] for entry in recent]),
+    )
+    check(
+        "the recorded question round-trips",
+        any("ScreenCaptureKit" in entry["message"] for entry in recent),
+        str([entry["message"] for entry in recent]),
+    )
+
+    await db.record_query("Is the ScreenCaptureKit leak fixed?", 5)
+    deduped = await db.recent_queries(limit=5)
+    messages = [entry["message"] for entry in deduped]
+    check(
+        "a repeated question collapses to one entry",
+        len(messages) == len(set(messages)),
+        str(messages),
+    )
+
+    await db.prune_query_history(keep=1)
+    pruned = await db.recent_queries(limit=10)
+    check("history is pruned to the retention window", len(pruned) == 1, str(len(pruned)))
+
+
+async def test_hydration_includes_prior_queries() -> None:
+    print("\n[hydrator] temporal context reaches the planner prompt")
+    from engine.hydrator import Hydrator
+
+    await db.init_db()
+    await db.record_query("What about the WebRTC datachannel leak?", 5)
+
+    hydrator = Hydrator(LLMClient())
+    outcome = await hydrator.hydrate_detailed("And its workaround?")
+    check("prior queries are returned", len(outcome.prior_queries) >= 1, str(outcome.prior_queries))
+    check(
+        "prior queries are in the hydration context",
+        "WebRTC datachannel leak" in outcome.context,
+        outcome.context[:300],
+    )
+    check(
+        "the context marks them as context only",
+        "never search for them" in outcome.context,
+        outcome.context[:300],
+    )
+
+
 async def main() -> int:
     await test_cache_volatility_isolation()
     await test_cache_purge()
@@ -459,6 +525,8 @@ async def main() -> int:
     await test_wave_two_followup()
     await test_ambient_sensor()
     await test_auto_verification()
+    await test_query_history()
+    await test_hydration_includes_prior_queries()
 
     print(f"\n{'=' * 60}")
     print(f"passed: {len(PASSED)}   failed: {len(FAILED)}")

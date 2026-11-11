@@ -620,13 +620,28 @@ async def record_query(message: str, focus_level: int = 2) -> dict[str, Any]:
 
 
 async def recent_queries(limit: int = 5) -> list[dict[str, Any]]:
-    """The most recent questions, newest first."""
+    """The most recent distinct questions, newest first.
+
+    Asking the same thing twice is one topic, not two, so identical
+    messages collapse to their newest occurrence.
+    """
     async with connect() as db:
         rows = await (await db.execute(
             "SELECT * FROM query_history ORDER BY created_at DESC LIMIT ?",
-            (max(1, min(int(limit), 50)),),
+            (max(1, min(int(limit), 50)) * 4,),
         )).fetchall()
-    return [_query_row(row) for row in rows]
+    seen: set[str] = set()
+    results: list[dict[str, Any]] = []
+    for row in rows:
+        entry = _query_row(row)
+        key = entry["message"].lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        results.append(entry)
+        if len(results) >= limit:
+            break
+    return results
 
 
 async def prune_query_history(keep: int = 50) -> int:

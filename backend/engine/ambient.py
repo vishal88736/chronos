@@ -98,6 +98,10 @@ class AmbientSensor:
 
         `override_app` is the evaluator-facing switcher value: when the user
         picks an app explicitly in the UI it wins over the OS probe.
+
+        The raw clipboard text is read, reduced to distinctive identifiers and
+        then discarded. Only the identifiers are ever returned, so the
+        clipboard cannot leave the engine process.
         """
         if override_app and override_app.strip():
             context = AmbientContext(
@@ -106,7 +110,7 @@ class AmbientSensor:
                 source="manual",
                 available=True,
             )
-            context.clipboard = await self.read_clipboard()
+            context.terms = extract_terms(context, "")
             self._last = context
             return context
 
@@ -121,8 +125,9 @@ class AmbientSensor:
             logger.debug("ambient detection failed: %s", exc)
             context = AmbientContext()
 
-        context.clipboard = await self.read_clipboard()
-        context.available = bool(context.app or context.title or context.clipboard)
+        clipboard = await self.read_clipboard()
+        context.terms = extract_terms(context, clipboard)
+        context.available = bool(context.app or context.title or context.terms)
         self._last = context
         return context
 
@@ -306,13 +311,23 @@ _FILE_EXTENSIONS = (
 )
 
 
-def extract_terms(context: AmbientContext) -> list[str]:
+def extract_terms(
+    context: AmbientContext, clipboard: str | None = None
+) -> list[str]:
     """Distinctive terms worth folding into a follow-up query.
 
     Only high-signal tokens survive: the open file's name, the channel the
     user is reading, and any identifier in the current selection. Everything
     else is noise that would pollute the web query.
+
+    When `clipboard` is omitted the terms already carried by the context are
+    returned, so callers never have to handle the raw clipboard text.
     """
+    if clipboard is None:
+        if context.terms:
+            return list(context.terms)
+        clipboard = ""
+
     terms: list[str] = []
     seen: set[str] = set()
 
@@ -346,7 +361,6 @@ def extract_terms(context: AmbientContext) -> list[str]:
 
     # Clipboard text is the weakest signal, so it only contributes long,
     # distinctive identifiers — never ordinary prose words.
-    clipboard = context.clipboard or ""
     if len(clipboard) >= 24:
         for match in re.findall(r"\b[a-zA-Z_][a-zA-Z0-9_]{6,40}\b", clipboard)[:4]:
             lowered = match.lower()

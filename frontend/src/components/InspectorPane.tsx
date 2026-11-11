@@ -192,6 +192,14 @@ function shortHash(hash: string): string {
   return `${hash.slice(0, 8)}…${hash.slice(-4)}`;
 }
 
+function humaniseAge(timestampSeconds: number): string {
+  const seconds = Math.max(0, Math.floor(Date.now() / 1000) - timestampSeconds);
+  if (seconds < 60) return "now";
+  if (seconds < 3600) return `${Math.floor(seconds / 60)}m`;
+  if (seconds < 86_400) return `${Math.floor(seconds / 3600)}h`;
+  return `${Math.floor(seconds / 86_400)}d`;
+}
+
 function SectionCard({
   index,
   title,
@@ -297,6 +305,7 @@ export default function InspectorPane({
   const queuedCount = activePromises.filter((promise) => promise.status === "QUEUED_QUIET").length;
   const displayEntities = hydration?.entities?.length ? hydration.entities : allEntities;
   const matchedKeys = new Set(hydration?.entities?.map((entity) => entity.key) ?? []);
+  const priorQueries = hydration?.prior_queries ?? [];
 
   const guidePromise = activePromises[0];
   const guidePriority = guidePromise?.priority ?? 2;
@@ -517,6 +526,21 @@ export default function InspectorPane({
                   {ambient.selection}
                 </p>
               ) : null}
+              {ambient?.terms?.length ? (
+                <div className="mt-1.5 flex flex-wrap items-center gap-1">
+                  <span className="font-mono text-[9.5px] uppercase tracking-[0.1em] text-faint/70">
+                    folded into query
+                  </span>
+                  {ambient.terms.map((term) => (
+                    <span
+                      key={term}
+                      className="rounded-[4px] border border-accent/20 bg-accent/[0.07] px-1 py-[1px] font-mono text-[9.5px] text-accent-fg/85"
+                    >
+                      {term}
+                    </span>
+                  ))}
+                </div>
+              ) : null}
             </div>
 
             <div className="mt-2 space-y-1.5">
@@ -575,6 +599,36 @@ export default function InspectorPane({
               <p className="mt-2 font-mono text-[10.5px] uppercase tracking-[0.04em] text-cached/70">
                 pronoun resolution · {hydration.pronouns_resolved.join(" / ")}
               </p>
+            ) : null}
+
+            {priorQueries.length > 0 ? (
+              <div className="mt-2.5 rounded-[8px] border border-tint/[0.05] bg-tint/[0.012] px-2.5 py-2">
+                <div className="flex items-center gap-1.5">
+                  <History size={9.5} className="text-faint" />
+                  <span className="font-mono text-[10px] uppercase tracking-[0.12em] text-faint">
+                    temporal memory
+                  </span>
+                  <span className="ml-auto font-mono text-[9.5px] uppercase tracking-[0.06em] text-faint/80">
+                    {priorQueries.length} prior question
+                    {priorQueries.length === 1 ? "" : "s"}
+                  </span>
+                </div>
+                <div className="mt-1.5 space-y-1">
+                  {priorQueries.map((query) => (
+                    <div
+                      key={query.id}
+                      className="flex items-start gap-2 text-[11px] leading-relaxed"
+                    >
+                      <span className="mt-[3px] shrink-0 font-mono text-[9.5px] uppercase tracking-[0.05em] text-faint/70">
+                        {humaniseAge(query.created_at)}
+                      </span>
+                      <span className="min-w-0 flex-1 truncate text-muted" title={query.message}>
+                        {query.message}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              </div>
             ) : null}
 
             <div className="mt-2.5 flex items-center gap-2 rounded-[7px] border border-tint/[0.055] bg-shade/20 px-2 py-1.5">

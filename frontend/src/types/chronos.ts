@@ -60,9 +60,9 @@ export interface AmbientContext {
   app: string;
   title: string;
   selection: string;
-  clipboard: string;
   source: string;
   available: boolean;
+  terms: string[];
 }
 
 export interface PriorQuery {

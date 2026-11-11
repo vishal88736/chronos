@@ -227,14 +227,19 @@ class ActivityLogEntry(StrictModel):
 
 
 class AmbientContext(StrictModel):
-    """The user's current OS window / clipboard context, if the host exposes it."""
+    """The user's current OS window / clipboard context, if the host exposes it.
+
+    Only structural identifiers are carried. The raw clipboard text never
+    leaves the engine process — it is reduced to distinctive terms locally
+    and the original is discarded.
+    """
 
     app: str = ""
     title: str = ""
     selection: str = ""
-    clipboard: str = ""
     source: str = "none"
     available: bool = False
+    terms: list[str] = Field(default_factory=list)
 
 
 class PriorQuery(StrictModel):
