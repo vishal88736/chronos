@@ -21,7 +21,8 @@ sub-queries. Respond with strict JSON only:
 Rules:
 - Use 2 independent nodes whenever different sources can answer in parallel.
 - Add a dependency only when a later query genuinely needs the result of an earlier one.
-- Never include the user's private promise or personal context in a web query.
+- Never include the user's private promise, personal context, or earlier questions in a web query.
+  Use them only to work out *what* the current question refers to.
 - VOLATILE = live versions, releases, prices, availability, current status, recent news.
 - STATIC = documentation, benchmark methodology, historical issues, settled facts.
 - Queries must be concise, standalone, and search-engine friendly.

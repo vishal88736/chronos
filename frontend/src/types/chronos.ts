@@ -65,6 +65,13 @@ export interface AmbientContext {
   available: boolean;
 }
 
+export interface PriorQuery {
+  id: string;
+  message: string;
+  focus_level: number;
+  created_at: number;
+}
+
 export interface StageTimings {
   hydration: number;
   dag_plan: number;

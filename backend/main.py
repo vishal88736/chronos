@@ -50,6 +50,7 @@ from schemas import (  # noqa: E402
     NodeStatus,
     NodeUpdateEvent,
     NudgePayload,
+    PriorQuery,
     PromiseCaughtEvent,
     ResolveResponse,
     SieveMetricsEvent,
@@ -557,6 +558,14 @@ async def _turn_generator(
         stages.hydration = hydration.latency_ms
         recorder.set_stage("hydration", stages.hydration)
 
+        # The question itself becomes part of the temporal memory, so a
+        # follow-up turn can resolve "the other one" against it.
+        _track_background(
+            asyncio.create_task(
+                db.record_query(message, focus_level), name="chronos-query-history"
+            )
+        )
+
         predicted = planner.predict_queries(message, hydration.entities)
         speculative_hit = any(query in speculation.warmed_queries for query in predicted)
         yield _sse(
@@ -567,6 +576,9 @@ async def _turn_generator(
                 speculative_hit=speculative_hit,
                 latency_ms=hydration.latency_ms,
                 active_app=ambient,
+                prior_queries=[
+                    PriorQuery.model_validate(entry) for entry in hydration.prior_queries
+                ],
             )
         )
 

@@ -237,6 +237,15 @@ class AmbientContext(StrictModel):
     available: bool = False
 
 
+class PriorQuery(StrictModel):
+    """A previously asked question and when it was asked."""
+
+    id: str
+    message: str
+    focus_level: int = 2
+    created_at: int
+
+
 class NudgePayload(StrictModel):
     promise_id: str
     urgency: float
@@ -375,6 +384,7 @@ class HydrationEvent(StrictModel):
     speculative_hit: bool = False
     latency_ms: int = 0
     active_app: AmbientContext | None = None
+    prior_queries: list[PriorQuery] = Field(default_factory=list)
 
 
 class DAGPlanEvent(StrictModel):

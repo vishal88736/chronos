@@ -15,6 +15,20 @@ logger = logging.getLogger("chronos.hydrator")
 
 _PRONOUNS = {"he", "him", "his", "she", "her", "hers", "they", "them", "their", "theirs"}
 _BOUNDARY = r"(?<![A-Za-z0-9_]){}(?![A-Za-z0-9_])"
+# How many earlier questions are injected into the hydration context.
+PRIOR_QUERY_LIMIT = 5
+
+
+def _humanise_age(seconds: int) -> str:
+    """A compact age label for the temporal memory context."""
+    seconds = max(0, int(seconds))
+    if seconds < 60:
+        return "just now"
+    if seconds < 3600:
+        return f"{seconds // 60}m ago"
+    if seconds < 86_400:
+        return f"{seconds // 3600}h ago"
+    return f"{seconds // 86_400}d ago"
 
 _EXTRACTION_SYSTEM = """You maintain a private, local personal-context graph for a developer.
 Extract only durable facts the user explicitly states about themselves, their team,
@@ -36,6 +50,7 @@ class HydrationOutcome:
     entities: list[dict[str, Any]] = field(default_factory=list)
     pronouns_resolved: list[str] = field(default_factory=list)
     latency_ms: int = 0
+    prior_queries: list[dict[str, Any]] = field(default_factory=list)
 
 
 class Hydrator:
@@ -45,6 +60,7 @@ class Hydrator:
     async def hydrate_detailed(self, raw_query: str) -> HydrationOutcome:
         started = time.perf_counter()
         entities = await db.get_entities()
+        prior_queries = await db.recent_queries(PRIOR_QUERY_LIMIT)
         lowered = raw_query.lower()
         matched: list[dict[str, Any]] = []
         seen_keys: set[str] = set()
@@ -73,18 +89,30 @@ class Hydrator:
                 for pronoun in sorted(pronoun_hits):
                     resolved_pronouns.append(f"{pronoun} → {entity['key']}")
 
+        lines: list[str] = []
         if matched:
-            lines = [
+            lines.append(
                 "Local context resolved from the user's private Chronos memory. "
-                "Treat these facts as authoritative for disambiguation; do not web-search them:",
-            ]
+                "Treat these facts as authoritative for disambiguation; do not web-search them:"
+            )
             for entity in matched:
                 lines.append(f"- {entity['key']}: {entity['value']} ({entity['category']})")
             if resolved_pronouns:
                 lines.append(f"- pronoun resolution: {', '.join(resolved_pronouns)}")
-            context = "\n".join(lines)
-        else:
-            context = ""
+
+        # The temporal half of the memory graph: what was asked before, and
+        # when. A follow-up like "and what about the other one?" is only
+        # answerable if the earlier question is in context.
+        if prior_queries:
+            lines.append(
+                "Recent questions from this user, newest first. Use them only to resolve "
+                "references such as 'the other one' or 'that fix'; never search for them:"
+            )
+            for entry in prior_queries:
+                age = _humanise_age(int(time.time()) - int(entry["created_at"]))
+                lines.append(f"- ({age}) {entry['message'][:220]}")
+
+        context = "\n".join(lines) if lines else ""
 
         latency_ms = max(1, int((time.perf_counter() - started) * 1000))
         logger.debug("hydrated query in %dms with %d entities", latency_ms, len(matched))
@@ -93,6 +121,7 @@ class Hydrator:
             entities=matched,
             pronouns_resolved=resolved_pronouns,
             latency_ms=latency_ms,
+            prior_queries=prior_queries,
         )
 
     async def hydrate_query(self, raw_query: str) -> tuple[str, list[dict[str, Any]]]:

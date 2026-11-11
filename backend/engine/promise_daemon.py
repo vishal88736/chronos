@@ -522,6 +522,11 @@ class PromiseDaemon:
                         *(self._poll_promise(promise) for promise in promises),
                         return_exceptions=True,
                     )
+                # Opportunistic maintenance: the watcher ticks often enough to
+                # keep the epistemic cache and the query history from growing
+                # without bound, without adding a background task of its own.
+                await db.purge_expired_cache()
+                await db.prune_query_history()
             except asyncio.CancelledError:
                 raise
             except Exception as exc:  # noqa: BLE001 - watcher must survive one bad page

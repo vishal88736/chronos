@@ -77,9 +77,17 @@ CREATE TABLE IF NOT EXISTS outbound_activity_log (
     created_at INTEGER NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS query_history (
+    id TEXT PRIMARY KEY,
+    message TEXT NOT NULL,
+    focus_level INTEGER NOT NULL,
+    created_at INTEGER NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS idx_promises_status ON caught_promises(status);
 CREATE INDEX IF NOT EXISTS idx_cache_created_at ON epistemic_cache(created_at);
 CREATE INDEX IF NOT EXISTS idx_activity_created_at ON outbound_activity_log(created_at);
+CREATE INDEX IF NOT EXISTS idx_query_history_created_at ON query_history(created_at);
 """
 
 # Columns added after the first release. Existing databases are migrated in
@@ -570,3 +578,68 @@ async def recent_outbound_activity(
             if overlap >= 0.6:
                 matches.append(entry)
     return matches
+
+
+# ── Query history ────────────────────────────────────────────────────────────
+#
+# The temporal half of the memory graph. A follow-up question like "and what
+# about the other one?" is meaningless without knowing what was asked before
+# it and how long ago.
+
+
+def _query_row(row: aiosqlite.Row) -> dict[str, Any]:
+    return {
+        "id": str(row["id"]),
+        "message": str(row["message"]),
+        "focus_level": int(row["focus_level"]),
+        "created_at": int(row["created_at"]),
+    }
+
+
+async def record_query(message: str, focus_level: int = 2) -> dict[str, Any]:
+    """Store a turn's question with its timestamp."""
+    clean = " ".join(str(message).split())[:2000]
+    if not clean:
+        raise ValueError("query message is required")
+    entry = {
+        "id": f"q_{uuid.uuid4().hex[:12]}",
+        "message": clean,
+        "focus_level": int(focus_level or 2),
+        "created_at": int(time.time()),
+    }
+    async with connect() as db:
+        await db.execute(
+            """
+            INSERT INTO query_history (id, message, focus_level, created_at)
+            VALUES (?, ?, ?, ?)
+            """,
+            (entry["id"], entry["message"], entry["focus_level"], entry["created_at"]),
+        )
+        await db.commit()
+    return entry
+
+
+async def recent_queries(limit: int = 5) -> list[dict[str, Any]]:
+    """The most recent questions, newest first."""
+    async with connect() as db:
+        rows = await (await db.execute(
+            "SELECT * FROM query_history ORDER BY created_at DESC LIMIT ?",
+            (max(1, min(int(limit), 50)),),
+        )).fetchall()
+    return [_query_row(row) for row in rows]
+
+
+async def prune_query_history(keep: int = 50) -> int:
+    """Drop the oldest questions beyond the retention window."""
+    async with connect() as db:
+        cursor = await db.execute(
+            """
+            DELETE FROM query_history WHERE id NOT IN (
+                SELECT id FROM query_history ORDER BY created_at DESC LIMIT ?
+            )
+            """,
+            (max(1, int(keep)),),
+        )
+        deleted = cursor.rowcount or 0
+        await db.commit()
+    return int(deleted)
