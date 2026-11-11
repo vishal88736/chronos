@@ -106,6 +106,12 @@ export default function Page() {
   const [isExportingTrace, setIsExportingTrace] = useState(false);
   const [showInspector, setShowInspector] = useState(false);
 
+  // The glass box opens by default on desktop, but the toggle must actually
+  // close it there too — a CSS `lg:block` used to pin the panel open forever.
+  useEffect(() => {
+    if (window.matchMedia("(min-width: 1024px)").matches) setShowInspector(true);
+  }, []);
+
   const streamRef = useRef<StreamHandle | null>(null);
   const activeAssistantIdRef = useRef<string | null>(null);
   const speculateDebounceRef = useRef<number | null>(null);
@@ -784,7 +790,12 @@ export default function Page() {
       />
 
       <main className="grid min-h-0 flex-1 grid-cols-12 overflow-hidden">
-        <section className="relative col-span-12 flex min-h-0 min-w-0 flex-col border-r border-tint/[0.06] lg:col-span-7">
+        <section
+          className={clsxPanel(
+            "relative col-span-12 flex min-h-0 min-w-0 flex-col",
+            showInspector && "lg:col-span-7",
+          )}
+        >
           <ChatPane
             input={input}
             onInputChange={handleInputChange}
@@ -826,8 +837,10 @@ export default function Page() {
 
         <section
           className={clsxPanel(
-            "col-span-12 min-h-0 overflow-hidden lg:col-span-5 lg:block",
-            showInspector ? "fixed inset-y-12 right-0 z-40 w-[min(92vw,460px)] shadow-2xl" : "hidden",
+            "min-h-0 overflow-hidden",
+            showInspector
+              ? "fixed inset-y-12 right-0 z-40 w-[min(92vw,460px)] bg-panel shadow-2xl lg:static lg:inset-auto lg:z-auto lg:col-span-5 lg:w-auto lg:bg-transparent lg:shadow-none"
+              : "hidden",
           )}
         >
           <div className="flex h-9 shrink-0 items-center justify-end border-b border-tint/[0.045] px-3 lg:hidden">

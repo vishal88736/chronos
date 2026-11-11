@@ -80,20 +80,22 @@ window titles and prior questions stay inside the engine process.
 
 ## 5. Interface
 
-The workspace is a single split screen: a conversational left pane and a
-glass-box right pane that shows the engine thinking.
+The workspace is a collapsible split screen: a conversational left pane and a
+glass-box right pane grouped into **Trace / Sources / Promises** tabs. On
+desktop the inspector opens by default and the panel toggle collapses it to a
+full-width chat with no residual divider; on mobile it becomes an opaque
+drawer.
 
 | Surface | Role |
 |---|---|
-| **Ambient session bar** | Connection state, the live ambient window, the local-context indicator |
+| **Top bar** | Chronos lockup, ambient-context switcher, compact focus popover, promise counter, theme and inspector toggles |
 | **Composer** | 400ms-debounced speculative prefetch, streaming with a native `EventSource`, copy-answer |
+| **Structured answer** | Safe renderer for the engine's Answer / Evidence / note blocks, with hoverable citation pills |
 | **Nudge island** | The released nudge: urgency, trigger, pre-staged artifact, copy-and-resolve |
 | **Auto-verified banner** | The quiet outcome — "Stayed quiet · auto-verified", no interruption |
-| **Stage latency ribbon** | Proportional millisecond budget per stage, plus the flight-recorder export |
-| **Ambient OS context card** | The detected window, the matched entities, and the temporal memory of prior questions |
-| **Multi-wave DAG card** | Wave 1 and wave 2 branches with live status, latency, provider and self-healing detail |
-| **Authority-weighted sieve card** | Compression ratio, the composite formula, and per-source authority / freshness / composite badges |
-| **Promise daemon card** | The urgency math, both simulators, the caught promises, and the outbound activity log |
+| **Trace tab** | Stage latency ribbon, ambient OS context, the multi-wave DAG, and the flight-recorder export |
+| **Sources tab** | Compression ratio, the composite formula, and per-source authority / freshness / composite badges |
+| **Promises tab** | The urgency math, both simulators, the caught promises, and the outbound activity log |
 
 Visual language: deep-ink canvas, an emerald/teal signal colour, airy
 surfaces, soft edges, and a dotted grid that recedes into the background. A

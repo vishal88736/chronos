@@ -116,33 +116,32 @@ export default function AmbientSwitcher({
         aria-haspopup="listbox"
         aria-expanded={open}
         className={clsx(
-          "group flex h-8 items-center gap-2 rounded-[10px] border px-2.5 text-left transition-all duration-200",
-          compact ? "w-8 justify-center px-0" : "max-w-[260px]",
+          "group flex h-7 items-center gap-1.5 rounded-full border px-2.5 text-left transition-all duration-200",
+          compact ? "w-7 justify-center px-0" : "max-w-[190px]",
           open
             ? "border-accent/35 bg-accent/[0.09]"
-            : "border-tint/[0.07] bg-tint/[0.02] hover:border-tint/[0.13] hover:bg-tint/[0.04]",
+            : "border-tint/[0.075] bg-tint/[0.03] hover:border-tint/[0.13] hover:bg-tint/[0.045]",
         )}
-        title="Ambient OS context injected into the search DAG"
+        title={
+          active
+            ? `Ambient OS context: ${active.label} · ${active.detail}`
+            : detectedApp
+              ? `Ambient OS context: ${detectedTitle || detectedApp}`
+              : "Ambient OS context injected into the search DAG"
+        }
       >
-        <Icon size={12.5} className="shrink-0 text-accent-fg" />
+        <Icon size={12} className="shrink-0 text-accent-fg" />
         {compact ? null : (
           <>
-            <span className="min-w-0 flex-1 leading-none">
-              <span className="block truncate text-[11.5px] font-medium text-ink">
-                {active?.label ?? "Ambient context"}
-              </span>
-              <span className="mt-[3px] block truncate font-mono text-[9.5px] uppercase tracking-[0.09em] text-faint">
-                {active
-                  ? active.detail
-                  : detectedApp
-                    ? detectedTitle?.slice(0, 34) || detectedApp
-                    : supported
-                      ? "auto-detect"
-                      : "unavailable"}
-              </span>
+            <span className="min-w-0 flex-1 truncate text-[11.5px] font-medium text-ink">
+              {active
+                ? active.label
+                : detectedApp
+                  ? detectedApp
+                  : "Ambient context"}
             </span>
             <ChevronDown
-              size={11}
+              size={10}
               className={clsx(
                 "shrink-0 text-faint transition-transform duration-200",
                 open && "rotate-180",

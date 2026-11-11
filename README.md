@@ -49,10 +49,10 @@ No part of the demo depends on a stub endpoint.
 ```text
 ┌──────────────────────────────── Browser / Next.js 14 ────────────────────────────────┐
 │                                                                                      │
-│  LEFT: ambient chat + nudge surface             RIGHT: live glass-box inspector       │
+│  LEFT: ambient chat + nudge surface             RIGHT: glass-box inspector (tabs)      │
 │  ─────────────────────────────────             ─────────────────────────────────     │
-│  starter traces · citation pills                hydration · DAG · BM25 funnel        │
-│  contradiction callouts · nudge draft            promise watcher · simulator          │
+│  structured answers · citation pills            trace · sources · promises            │
+│  contradiction callouts · nudge draft            hydration · DAG · simulator          │
 │           ▲             │                                ▲              │             │
 │           │ SSE TOKENs  │ POST /api/chat/stream          │ SSE NUDGE    │ POST       │
 └───────────┴─────────────┴────────────────────────────────┴──────────────┴─────────────┘
@@ -159,9 +159,11 @@ After tokens are streamed, a structured contradiction audit compares the sources
 incompatible versions, dates, prices, measurements, or status claims. The result is emitted as a
 `CONTRADICTIONS` SSE event and rendered as rose-colored source-discrepancy cards.
 
-When no LLM is configured, a deterministic extractive synthesizer selects sentences from the
-retrieved chunks, deduplicates by URL, and streams a cited evidence summary. It is not presented
-as generative synthesis.
+When no LLM is configured, a deterministic extractive synthesizer mirrors the same
+**Answer / Evidence** layout: navigation chrome and boilerplate are filtered out, a sentence needs
+at least two distinctive query terms to become the direct answer, and weak matches are shown as
+**Closest evidence** rather than dressed up as confirmation. It is not presented as generative
+synthesis.
 
 ### Stage 5 — Promise daemon & attention gate
 
@@ -239,13 +241,15 @@ Promise states: `WATCHING → QUEUED_QUIET ↔ NUDGED → RESOLVED`.
     ├── src/app                  # layout, page-level SSE controller, design tokens
     ├── src/lib/stream.ts        # EventSource streaming with a fetch fallback
     ├── src/components
-    │   ├── TopMenuBar.tsx       # traffic lights, focus switcher, ambient switcher
+    │   ├── TopMenuBar.tsx       # Chronos lockup, focus menu, ambient switcher, panel toggle
+    │   ├── ChronosLogo.tsx      # chronograph mark + wordmark
     │   ├── AmbientSwitcher.tsx  # evaluator-facing OS context switcher
     │   ├── NudgePill.tsx        # pre-staged artifact, copy/resolve/dismiss
     │   ├── AutoVerifiedBanner.tsx # the "stayed quiet" toast
     │   ├── LatencyRibbon.tsx    # stage budget + trace export
+    │   ├── StructuredAnswer.tsx # safe block renderer for cited answers
     │   ├── ChatPane.tsx         # streaming chat, citation pills, discrepancies
-    │   └── InspectorPane.tsx    # waves, authority sieve, promise watcher, simulator
+    │   └── InspectorPane.tsx    # trace / sources / promises tabs, simulator
     └── src/types/chronos.ts     # mirrors backend schemas
 ```
 
@@ -336,7 +340,7 @@ The `chat/stream` endpoint is a POST stream, so the browser reads it with `fetch
    - Citation pills `[src_n]` highlight a chunk when hovered.
    - Source disagreement appears as a rose discrepancy card.
    - A promise is caught and `Active` increments.
-4. Scroll to **Promise daemon**, click **Simulate target webpage update**.
+4. Open the inspector's **Promises** tab, then click **Simulate target webpage update**.
    The action artifact is generated and held:
    **QUEUED_QUIET · urgency 0.80 < 2.50**.
 5. Click **Idle 1** in the top bar. The nudge flushes instantly. Expand the accordion,

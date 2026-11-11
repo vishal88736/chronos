@@ -4,15 +4,15 @@ import "@fontsource-variable/jetbrains-mono";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "Chronos · minimi",
+  title: "Chronos — glass-box research engine",
   description:
     "Ambient, promise-aware web research with a live glass-box telemetry inspector.",
 };
 
 export const viewport: Viewport = {
   themeColor: [
-    { media: "(prefers-color-scheme: dark)", color: "#090A0F" },
-    { media: "(prefers-color-scheme: light)", color: "#F6F7FB" },
+    { media: "(prefers-color-scheme: dark)", color: "#080C0C" },
+    { media: "(prefers-color-scheme: light)", color: "#F7FAF9" },
   ],
   colorScheme: "dark light",
   width: "device-width",

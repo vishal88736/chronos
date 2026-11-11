@@ -296,6 +296,7 @@ export default function InspectorPane({
   isExportingTrace,
 }: InspectorPaneProps) {
   const [expandedSources, setExpandedSources] = useState<Set<string>>(new Set());
+  const [activeTab, setActiveTab] = useState<"trace" | "sources" | "promises">("trace");
 
   const activePromises = useMemo(
     () => promises.filter((promise) => promise.status !== "RESOLVED"),
@@ -303,6 +304,9 @@ export default function InspectorPane({
   );
   const activeCount = activePromises.length;
   const queuedCount = activePromises.filter((promise) => promise.status === "QUEUED_QUIET").length;
+  const autoVerifiedCount = activePromises.filter(
+    (promise) => promise.status === "AUTO_VERIFIED_SILENT",
+  ).length;
   const displayEntities = hydration?.entities?.length ? hydration.entities : allEntities;
   const matchedKeys = new Set(hydration?.entities?.map((entity) => entity.key) ?? []);
   const priorQueries = hydration?.prior_queries ?? [];
@@ -318,19 +322,30 @@ export default function InspectorPane({
 
   useEffect(() => {
     if (!highlightedSourceId) return;
+    setActiveTab("sources");
     setExpandedSources((previous) => {
       if (previous.has(highlightedSourceId)) return previous;
       const next = new Set(previous);
       next.add(highlightedSourceId);
       return next;
     });
+  }, [highlightedSourceId]);
+
+  // The source card only exists after the sources tab has mounted, so the
+  // scroll has to wait for that render rather than racing it.
+  useEffect(() => {
+    if (activeTab !== "sources" || !highlightedSourceId) return;
     const frame = window.requestAnimationFrame(() => {
       document
         .getElementById(`source-card-${highlightedSourceId}`)
         ?.scrollIntoView({ block: "nearest", behavior: "smooth" });
     });
     return () => window.cancelAnimationFrame(frame);
-  }, [highlightedSourceId]);
+  }, [activeTab, highlightedSourceId]);
+
+  useEffect(() => {
+    if (simulation) setActiveTab("promises");
+  }, [simulation]);
 
   function toggleSource(sourceId: string) {
     setExpandedSources((previous) => {
@@ -451,19 +466,22 @@ export default function InspectorPane({
 
   return (
     <aside className="flex h-full min-h-0 flex-col bg-panel/65">
-      <div className="flex h-9 shrink-0 items-center justify-between border-b border-tint/[0.045] px-4">
-        <div className="flex items-center gap-2">
-          <Radar size={11} className="text-accent-fg/80" />
-          <span className="font-mono text-[11px] uppercase tracking-[0.17em] text-muted">
-            Glass-box inspector
+      <div className="flex h-10 shrink-0 items-center justify-between px-4">
+        <div className="flex items-baseline gap-2">
+          <Radar size={11} className="translate-y-[1px] text-accent-fg/80" />
+          <span className="text-[12.5px] font-semibold tracking-[-0.005em] text-ink">
+            Glass-box
+          </span>
+          <span className="font-mono text-[9.5px] uppercase tracking-[0.16em] text-faint">
+            inspector
           </span>
         </div>
         <div className="flex items-center gap-2">
-          <span className="hidden font-mono text-[10px] uppercase tracking-[0.1em] text-faint sm:inline">
-            {providers.llm ? "synthesis · llm" : "synthesis · extractive"}
+          <span className="hidden font-mono text-[9.5px] uppercase tracking-[0.1em] text-faint sm:inline">
+            {providers.llm ? "llm synthesis" : "extractive"}
           </span>
           <span className="h-3 w-px bg-tint/[0.08]" />
-          <span className="flex items-center gap-1.5 font-mono text-[10px] uppercase tracking-[0.1em] text-muted">
+          <span className="flex items-center gap-1.5 font-mono text-[9.5px] uppercase tracking-[0.1em] text-muted">
             <span
               className={clsx(
                 "h-1.5 w-1.5 rounded-full",
@@ -475,8 +493,63 @@ export default function InspectorPane({
         </div>
       </div>
 
+      <div
+        className="flex shrink-0 items-center gap-1 border-b border-tint/[0.055] px-3 pb-2"
+        role="tablist"
+        aria-label="Inspector sections"
+      >
+        {(
+          [
+            { id: "trace", label: "Trace", icon: Activity, count: 0 },
+            {
+              id: "sources",
+              label: "Sources",
+              icon: Search,
+              count: metrics?.sources.length ?? 0,
+            },
+            { id: "promises", label: "Promises", icon: BellRing, count: activeCount },
+          ] as const
+        ).map((tab) => {
+          const TabIcon = tab.icon;
+          const selected = activeTab === tab.id;
+          return (
+            <button
+              key={tab.id}
+              type="button"
+              role="tab"
+              aria-selected={selected}
+              onClick={() => setActiveTab(tab.id)}
+              className={clsx(
+                "flex h-7 items-center gap-1.5 rounded-full border px-2.5 font-mono text-[10px] uppercase tracking-[0.09em] transition-colors",
+                selected
+                  ? "border-accent/25 bg-accent/[0.1] text-accent-fg"
+                  : "border-transparent text-faint hover:bg-tint/[0.03] hover:text-muted",
+              )}
+            >
+              <TabIcon size={10.5} strokeWidth={selected ? 2.2 : 1.9} />
+              {tab.label}
+              {tab.count > 0 ? (
+                <span
+                  className={clsx(
+                    "rounded-full px-1 py-[1px] text-[9px] tabular-nums",
+                    selected ? "bg-accent/15 text-accent-fg" : "bg-tint/[0.05] text-faint",
+                  )}
+                >
+                  {tab.count}
+                </span>
+              ) : null}
+              {tab.id === "promises" && autoVerifiedCount > 0 ? (
+                <ShieldCheck size={9.5} className="text-healthy/90" />
+              ) : null}
+            </button>
+          );
+        })}
+      </div>
+
       <div className="scrollbar-subtle flex-1 overflow-y-auto">
         <div className="space-y-2.5 p-3">
+          {activeTab === "trace" ? (
+            <>
           <SectionCard
             index="01"
             title="Stage latency"
@@ -728,9 +801,13 @@ export default function InspectorPane({
               </div>
             )}
           </SectionCard>
+          </>
+          ) : null}
 
+          {activeTab === "sources" ? (
+            <>
           <SectionCard
-            index="04"
+            index="01"
             title="Authority-weighted sieve"
             subtitle="BM25 + domain authority + freshness"
             icon={Search}
@@ -930,9 +1007,13 @@ export default function InspectorPane({
               </div>
             )}
           </SectionCard>
+            </>
+          ) : null}
 
+          {activeTab === "promises" ? (
+            <>
           <SectionCard
-            index="05"
+            index="01"
             title="Promise daemon"
             subtitle="differential watcher · urgency gate"
             icon={BellRing}
@@ -1196,16 +1277,8 @@ export default function InspectorPane({
               )}
             </div>
           </SectionCard>
-
-          <div className="flex items-center justify-between px-1 pb-1 pt-0.5">
-            <span className="font-mono text-[10px] uppercase tracking-[0.1em] text-faint/70">
-              chronos / glass-box
-            </span>
-            <span className="flex items-center gap-1.5 font-mono text-[10px] uppercase tracking-[0.08em] text-faint/70">
-              <Clock3 size={7.5} />
-              DOM poller armed
-            </span>
-          </div>
+            </>
+          ) : null}
         </div>
       </div>
     </aside>

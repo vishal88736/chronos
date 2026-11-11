@@ -8,22 +8,18 @@ import {
   Check,
   ClipboardCopy,
   CornerDownLeft,
-  Database,
   GitCompare,
-  Loader2,
-  Monitor,
-  Radio,
   Search,
   Sparkles,
   Square,
   Zap,
 } from "lucide-react";
+import StructuredAnswer from "@/components/StructuredAnswer";
 import type {
   AmbientContext,
   ChatMessage,
   Contradiction,
   SieveMetricsEvent,
-  SourceChunk,
   SpeculationView,
 } from "@/types/chronos";
 
@@ -66,66 +62,6 @@ const STARTER_PROMPTS = [
     icon: Zap,
   },
 ];
-
-function CitationButton({
-  sourceId,
-  sources,
-  onHover,
-}: {
-  sourceId: string;
-  sources: SourceChunk[];
-  onHover: (sourceId: string | null) => void;
-}) {
-  const source = sources.find((item) => item.id === sourceId);
-  return (
-    <button
-      type="button"
-      className="citation-pill"
-      aria-label={`Highlight ${sourceId}${source ? ` — ${source.title}` : ""} in the glass-box inspector`}
-      title={
-        source
-          ? `${source.title} · ${source.domain || "unknown host"} · composite ${source.composite_score.toFixed(2)}`
-          : sourceId
-      }
-      onMouseEnter={() => onHover(sourceId)}
-      onMouseLeave={() => onHover(null)}
-      onFocus={() => onHover(sourceId)}
-      onBlur={() => onHover(null)}
-    >
-      [{sourceId}]
-    </button>
-  );
-}
-
-function MessageCopy({
-  content,
-  sources,
-  onCitationHover,
-}: {
-  content: string;
-  sources: SourceChunk[];
-  onCitationHover: (sourceId: string | null) => void;
-}) {
-  const parts = content.split(/(\[src_\d+\])/g);
-  return (
-    <div className="chat-copy text-[13.5px] leading-[1.78] tracking-[-0.006em] text-ink">
-      {parts.map((part, index) => {
-        const citation = part.match(/^\[(src_\d+)\]$/);
-        if (citation) {
-          return (
-            <CitationButton
-              key={`${citation[1]}-${index}`}
-              sourceId={citation[1]}
-              sources={sources}
-              onHover={onCitationHover}
-            />
-          );
-        }
-        return <span key={`text-${index}`}>{part}</span>;
-      })}
-    </div>
-  );
-}
 
 function CopyAnswerButton({ content }: { content: string }) {
   const [copied, setCopied] = useState(false);
@@ -242,8 +178,6 @@ export default function ChatPane({
   contradictions,
   onCitationHover,
   connected,
-  activeApp,
-  ambient,
   nudgeSlot,
   autoVerifiedSlot,
 }: ChatPaneProps) {
@@ -305,8 +239,6 @@ export default function ChatPane({
 
   const showIdleState = messages.length === 0;
   const showSpeculation = !isStreaming && speculation && speculation.status !== "IDLE";
-  const ambientLabel =
-    activeApp || (ambient?.available ? `${ambient.app || "Ambient"} ${ambient.title || ""}`.trim() : "");
 
   return (
     <div className="relative flex h-full min-h-0 flex-col">
@@ -316,39 +248,6 @@ export default function ChatPane({
           {autoVerifiedSlot}
         </div>
       ) : null}
-
-      <div className="flex h-9 shrink-0 items-center justify-between border-b border-tint/[0.045] px-5">
-        <div className="flex min-w-0 items-center gap-2">
-          <span className="font-mono text-[11px] uppercase tracking-[0.16em] text-faint">
-            Ambient session
-          </span>
-          <span className="hidden h-[3px] w-[3px] rounded-full bg-tint/15 sm:block" />
-          <span className="flex items-center gap-1.5 font-mono text-[11px] uppercase tracking-[0.12em] text-muted">
-            <span
-              className={clsx(
-                "h-1.5 w-1.5 rounded-full",
-                connected ? "bg-healthy/90 shadow-[0_0_7px_rgba(16,185,129,0.55)]" : "bg-danger/80",
-              )}
-            />
-            {connected ? "nudge stream armed" : "reconnecting"}
-          </span>
-        </div>
-        <div className="flex items-center gap-2.5 text-[11px] text-faint">
-          {ambientLabel ? (
-            <span
-              className="hidden max-w-[220px] items-center gap-1.5 font-mono uppercase tracking-[0.1em] sm:flex"
-              title="Ambient OS context folded into the search DAG"
-            >
-              <Monitor size={9.5} className="text-accent-fg/70" />
-              <span className="truncate">{ambientLabel}</span>
-            </span>
-          ) : null}
-          <span className="hidden items-center gap-1.5 font-mono uppercase tracking-[0.11em] sm:flex">
-            <Database size={9.5} />
-            local context
-          </span>
-        </div>
-      </div>
 
       <div
         ref={scrollRef}
@@ -361,39 +260,34 @@ export default function ChatPane({
                 scrolls it into view when there is not — `justify-center`
                 clips the overflow on short viewports. */}
             <div className="my-auto animate-fade-up">
-              <div className="mb-5 flex items-center gap-2.5">
-                <div className="relative flex h-8 w-8 items-center justify-center rounded-[10px] border border-accent/25 bg-accent/[0.09] text-accent-fg shadow-[inset_0_1px_0_rgba(255,255,255,0.08),0_0_30px_rgba(16,185,129,0.1)]">
-                  <Sparkles size={14} strokeWidth={1.8} />
+              <div className="mb-4 flex items-center gap-2.5">
+                <div className="relative flex h-7 w-7 items-center justify-center rounded-[9px] border border-accent/25 bg-accent/[0.09] text-accent-fg shadow-[inset_0_1px_0_rgba(255,255,255,0.08),0_0_30px_rgba(16,185,129,0.1)]">
+                  <Sparkles size={13} strokeWidth={1.8} />
                   <span className="absolute -right-0.5 -top-0.5 h-1.5 w-1.5 rounded-full border border-canvas bg-healthy" />
                 </div>
-                <div>
-                  <p className="font-mono text-[11px] uppercase tracking-[0.17em] text-accent-fg/80">
-                    Zero-prompt context online
-                  </p>
-                  <p className="mt-0.5 text-[12px] text-faint">
-                    Hydration runs before the search leaves your machine
-                  </p>
-                </div>
+                <p className="font-mono text-[10.5px] uppercase tracking-[0.17em] text-accent-fg/80">
+                  Zero-prompt context online
+                </p>
               </div>
 
-              <h1 className="font-display max-w-[520px] text-[34px] leading-[1.1] tracking-[-0.035em] text-ink-strong sm:text-[42px]">
+              <h1 className="font-display max-w-[520px] text-[30px] leading-[1.12] tracking-[-0.035em] text-ink-strong sm:text-[36px]">
                 Find what you need.
                 <br />
                 <span className="text-faint">Keep your word.</span>
               </h1>
-              <p className="mt-3.5 max-w-[470px] text-[13.5px] leading-[1.75] text-muted">
+              <p className="mt-3 max-w-[460px] text-[13px] leading-[1.7] text-muted">
                 Chronos decomposes the question, hedges every source, and keeps watching the
                 thing you&apos;re waiting on. Your local context never becomes a search query.
               </p>
 
-              <div className="mt-7 flex items-center gap-2">
-                <span className="font-mono text-[11px] uppercase tracking-[0.16em] text-faint">
+              <div className="mt-6 flex items-center gap-2">
+                <span className="font-mono text-[10.5px] uppercase tracking-[0.16em] text-faint">
                   Start with a live trace
                 </span>
                 <span className="h-px flex-1 bg-gradient-to-r from-tint/[0.08] to-transparent" />
               </div>
 
-              <div className="mt-2.5 space-y-2">
+              <div className="mt-2 space-y-1.5">
                 {STARTER_PROMPTS.map((starter, index) => {
                   const Icon = starter.icon;
                   return (
@@ -401,11 +295,11 @@ export default function ChatPane({
                       key={starter.eyebrow}
                       type="button"
                       onClick={() => onSend(starter.prompt)}
-                      className="group relative w-full overflow-hidden rounded-[14px] border border-tint/[0.07] bg-tint/[0.014] px-4 py-3 text-left transition-all duration-200 hover:border-accent/25 hover:bg-accent/[0.03]"
+                      className="group relative w-full overflow-hidden rounded-[12px] border border-tint/[0.07] bg-tint/[0.014] px-3.5 py-2.5 text-left transition-all duration-200 hover:border-accent/25 hover:bg-accent/[0.03]"
                     >
                       <div className="flex items-start gap-3">
-                        <div className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-[9px] border border-tint/[0.07] bg-tint/[0.03] text-muted transition-colors group-hover:border-accent/20 group-hover:text-accent-fg">
-                          <Icon size={13} />
+                        <div className="mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-[8px] border border-tint/[0.07] bg-tint/[0.03] text-muted transition-colors group-hover:border-accent/20 group-hover:text-accent-fg">
+                          <Icon size={12} />
                         </div>
                         <div className="min-w-0">
                           <div className="flex items-center gap-2">
@@ -416,38 +310,16 @@ export default function ChatPane({
                               0{index + 1}
                             </span>
                           </div>
-                          <p className="mt-1 text-[12.5px] leading-[1.55] text-muted transition-colors group-hover:text-ink">
+                          <p className="mt-1 text-[12.5px] leading-[1.5] text-muted transition-colors group-hover:text-ink">
                             {starter.prompt}
                           </p>
                         </div>
                         <ArrowUp
-                          size={13}
-                          className="ml-auto mt-1 shrink-0 -rotate-45 text-faint/50 transition-all group-hover:translate-x-0.5 group-hover:-translate-y-0.5 group-hover:text-accent-fg"
+                          size={12}
+                          className="ml-auto mt-0.5 shrink-0 -rotate-45 text-faint/50 transition-all group-hover:translate-x-0.5 group-hover:-translate-y-0.5 group-hover:text-accent-fg"
                         />
                       </div>
                     </button>
-                  );
-                })}
-              </div>
-
-              <div className="mt-6 hidden grid-cols-3 gap-2 sm:grid">
-                {[
-                  { icon: Database, label: "SQLite graph", detail: "hydrated pre-flight" },
-                  { icon: Search, label: "Hedged retrieval", detail: "1.8s per URL" },
-                  { icon: Radio, label: "SSE telemetry", detail: "same-turn trace" },
-                ].map((feature) => {
-                  const Icon = feature.icon;
-                  return (
-                    <div
-                      key={feature.label}
-                      className="rounded-[10px] border border-tint/[0.05] bg-tint/[0.012] px-2.5 py-2.5"
-                    >
-                      <Icon size={10.5} className="text-faint" />
-                      <p className="mt-1.5 text-[11px] font-medium text-muted">{feature.label}</p>
-                      <p className="mt-0.5 font-mono text-[10.5px] uppercase tracking-[0.04em] text-faint">
-                        {feature.detail}
-                      </p>
-                    </div>
                   );
                 })}
               </div>
@@ -493,8 +365,8 @@ export default function ChatPane({
                         <AssistantActivity label={activityLabel} />
                       ) : (
                         <>
-                          <div className={clsx(isPendingAssistant && "typing-caret")}>
-                            <MessageCopy
+                          <div className={clsx("chat-copy", isPendingAssistant && "typing-caret")}>
+                            <StructuredAnswer
                               content={message.content}
                               sources={sources}
                               onCitationHover={onCitationHover}
@@ -661,8 +533,19 @@ export default function ChatPane({
               <span className="h-1 w-1 shrink-0 rounded-full bg-healthy/70" />
               <span className="truncate">Local-first context · search leaves no memory of you</span>
             </p>
-            <p className="hidden shrink-0 font-mono text-[10.5px] uppercase tracking-[0.08em] text-faint/80 sm:block">
-              SSE · trace live
+            <p
+              className={clsx(
+                "hidden shrink-0 items-center gap-1.5 font-mono text-[10px] uppercase tracking-[0.08em] sm:flex",
+                connected ? "text-faint/80" : "text-healing/80",
+              )}
+            >
+              <span
+                className={clsx(
+                  "h-1 w-1 rounded-full",
+                  connected ? "bg-healthy/80" : "bg-healing",
+                )}
+              />
+              {connected ? "SSE · live" : "SSE · reconnecting"}
             </p>
           </div>
         </div>
