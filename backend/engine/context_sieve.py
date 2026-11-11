@@ -24,6 +24,22 @@ CHUNK_OVERLAP = 20
 BM25_HEAL_THRESHOLD = 1.5
 MIN_SCRAPED_WORDS = 40
 MAX_CHUNKS_PER_NODE = 240
+# Evidence diversity guards. Without them a single long page can supply every
+# selected chunk, which wastes the context budget and makes the citation list
+# look like three sources when it is really one.
+MAX_CHUNKS_PER_URL = 2
+MAX_CHUNKS_PER_DOMAIN = 3
+
+
+def _domain_of(url: str) -> str:
+    """Bare hostname for a URL, lowercased and without a leading `www.`."""
+    if not url:
+        return ""
+    match = re.match(r"https?://([^/:?#]+)", url.strip(), flags=re.IGNORECASE)
+    if not match:
+        return ""
+    host = match.group(1).lower()
+    return host[4:] if host.startswith("www.") else host
 
 
 def tokenize(text: str) -> list[str]:
@@ -186,20 +202,42 @@ class ContextSieve:
         # prevents one verbose source from consuming the entire 8-chunk budget.
         selected: list[dict[str, Any]] = []
         selected_token_sets: list[set[str]] = []
+        selected_urls: list[str] = []
+        url_counts: dict[str, int] = {}
+        domain_counts: dict[str, int] = {}
         for chunk in all_chunks:
+            url = str(chunk.get("url", "") or "")
+            domain = _domain_of(url)
+            if url and url_counts.get(url, 0) >= MAX_CHUNKS_PER_URL:
+                continue
+            if domain and domain_counts.get(domain, 0) >= MAX_CHUNKS_PER_DOMAIN:
+                continue
             tokens = set(tokenize(str(chunk["text"])))
             too_similar = False
-            for existing in selected_token_sets:
+            for index, existing in enumerate(selected_token_sets):
                 if not tokens or not existing:
                     continue
                 overlap = len(tokens & existing) / max(1, min(len(tokens), len(existing)))
                 if overlap > 0.62:
                     too_similar = True
                     break
+                # Chunks from the same document overlap heavily by construction.
+                # Jaccard catches that near-duplication even when the chunking
+                # window keeps the raw overlap ratio below the ratio test.
+                if url and url == selected_urls[index]:
+                    union = len(tokens | existing)
+                    if union and len(tokens & existing) / union > 0.34:
+                        too_similar = True
+                        break
             if too_similar:
                 continue
             selected.append(chunk)
             selected_token_sets.append(tokens)
+            selected_urls.append(url)
+            if url:
+                url_counts[url] = url_counts.get(url, 0) + 1
+            if domain:
+                domain_counts[domain] = domain_counts.get(domain, 0) + 1
             if len(selected) >= limit:
                 break
 

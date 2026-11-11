@@ -36,6 +36,12 @@ def _clean_key(value: str | None) -> str:
     return key
 
 
+def _is_response_format_error(exc: Exception) -> bool:
+    """True when the provider rejected `response_format` specifically."""
+    text = str(exc).lower()
+    return "response_format" in text or "json_object" in text
+
+
 def _extract_json(content: str) -> Any | None:
     """Accept raw JSON, fenced JSON, or prose containing a JSON object."""
     text = (content or "").strip()
@@ -56,10 +62,48 @@ def _extract_json(content: str) -> Any | None:
     end = text.rfind(closing)
     if end <= start:
         return None
+    candidate = text[start : end + 1]
     try:
-        return json.loads(text[start : end + 1])
+        return json.loads(candidate)
     except json.JSONDecodeError:
-        return None
+        # The model may have appended prose after the object, which makes the
+        # naive slice unbalanced. Walk the structure instead.
+        balanced = _balanced_slice(text, start)
+        if balanced is None:
+            return None
+        try:
+            return json.loads(balanced)
+        except json.JSONDecodeError:
+            return None
+
+
+def _balanced_slice(text: str, start: int) -> str | None:
+    """Return the JSON object/array starting at `start`, ignoring braces in strings."""
+    opener = text[start]
+    closer = "}" if opener == "{" else "]"
+    depth = 0
+    in_string = False
+    escaped = False
+    for index in range(start, len(text)):
+        char = text[index]
+        if in_string:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                in_string = False
+            continue
+        if char == '"':
+            in_string = True
+            continue
+        if char == opener:
+            depth += 1
+        elif char == closer:
+            depth -= 1
+            if depth == 0:
+                return text[start : index + 1]
+    return None
 
 
 class LLMClient:
@@ -149,17 +193,20 @@ class LLMClient:
         ]
         target_model = model or self.fast_model
         last_error: Exception | None = None
+        use_response_format = True
 
         for attempt in range(2):
             try:
-                response = await self._client.chat.completions.create(
-                    model=target_model,
-                    messages=messages,
-                    temperature=temperature,
-                    max_tokens=max_tokens,
-                    response_format={"type": "json_object"},
-                    timeout=timeout,
-                )
+                kwargs: dict[str, Any] = {
+                    "model": target_model,
+                    "messages": messages,
+                    "temperature": temperature,
+                    "max_tokens": max_tokens,
+                    "timeout": timeout,
+                }
+                if use_response_format:
+                    kwargs["response_format"] = {"type": "json_object"}
+                response = await self._client.chat.completions.create(**kwargs)
                 content = response.choices[0].message.content or ""
                 parsed = _extract_json(content)
                 if parsed is None:
@@ -173,6 +220,16 @@ class LLMClient:
                     attempt + 1,
                     str(exc)[:300],
                 )
+                # A fair number of OpenAI-compatible endpoints reject
+                # `response_format` outright. Retry without it rather than
+                # losing the whole structured output.
+                if use_response_format and _is_response_format_error(exc):
+                    use_response_format = False
+                    logger.info(
+                        "provider %s rejected response_format; retrying as plain JSON",
+                        self.provider,
+                    )
+                    continue
                 if attempt == 0:
                     await asyncio.sleep(0.35)
 

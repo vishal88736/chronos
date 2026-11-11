@@ -67,15 +67,15 @@ const STATUS_META: Record<
 > = {
   PENDING: {
     label: "PENDING",
-    text: "text-zinc-400",
-    bg: "bg-white/[0.035]",
-    border: "border-white/[0.08]",
-    dot: "bg-zinc-500",
+    text: "text-muted",
+    bg: "bg-tint/[0.035]",
+    border: "border-tint/[0.08]",
+    dot: "bg-faint",
     icon: Clock3,
   },
   SCRAPING: {
     label: "SCRAPING",
-    text: "text-indigo-200",
+    text: "text-accent-fg",
     bg: "bg-accent/[0.1]",
     border: "border-accent/25",
     dot: "bg-accent",
@@ -84,7 +84,7 @@ const STATUS_META: Record<
   },
   CACHED: {
     label: "CACHED",
-    text: "text-cyan-200",
+    text: "text-cached-fg",
     bg: "bg-cached/[0.09]",
     border: "border-cached/22",
     dot: "bg-cached",
@@ -92,7 +92,7 @@ const STATUS_META: Record<
   },
   HEALING: {
     label: "HEALING",
-    text: "text-amber-200",
+    text: "text-healing-fg",
     bg: "bg-healing/[0.085]",
     border: "border-healing/22",
     dot: "bg-healing",
@@ -101,7 +101,7 @@ const STATUS_META: Record<
   },
   DONE: {
     label: "DONE",
-    text: "text-emerald-200",
+    text: "text-healthy-fg",
     bg: "bg-healthy/[0.075]",
     border: "border-healthy/20",
     dot: "bg-healthy",
@@ -109,7 +109,7 @@ const STATUS_META: Record<
   },
   FAILED: {
     label: "FAILED",
-    text: "text-rose-200",
+    text: "text-danger-fg",
     bg: "bg-danger/[0.075]",
     border: "border-danger/20",
     dot: "bg-danger",
@@ -123,31 +123,31 @@ const PROMISE_META: Record<
 > = {
   WATCHING: {
     label: "WATCHING",
-    text: "text-indigo-200",
+    text: "text-accent-fg",
     bg: "bg-accent/[0.09]",
     border: "border-accent/20",
     dot: "bg-accent",
   },
   QUEUED_QUIET: {
     label: "QUEUED_QUIET",
-    text: "text-amber-200",
+    text: "text-healing-fg",
     bg: "bg-healing/[0.09]",
     border: "border-healing/22",
     dot: "bg-healing",
   },
   NUDGED: {
     label: "NUDGED",
-    text: "text-emerald-200",
+    text: "text-healthy-fg",
     bg: "bg-healthy/[0.085]",
     border: "border-healthy/20",
     dot: "bg-healthy",
   },
   RESOLVED: {
     label: "RESOLVED",
-    text: "text-zinc-400",
-    bg: "bg-white/[0.03]",
-    border: "border-white/[0.07]",
-    dot: "bg-zinc-500",
+    text: "text-muted",
+    bg: "bg-tint/[0.03]",
+    border: "border-tint/[0.07]",
+    dot: "bg-faint",
   },
 };
 
@@ -188,20 +188,20 @@ function SectionCard({
   children: React.ReactNode;
 }) {
   return (
-    <section className="relative overflow-hidden rounded-[12px] border border-white/[0.065] bg-[#0F1117]/85 shadow-[0_1px_0_rgba(255,255,255,0.025),0_12px_28px_rgba(0,0,0,0.12)]">
-      <div className="pointer-events-none absolute inset-x-6 top-0 h-px bg-gradient-to-r from-transparent via-white/[0.08] to-transparent" />
-      <div className="flex items-center gap-2 border-b border-white/[0.055] px-3.5 py-2.5">
-        <span className="font-mono text-[8px] tabular-nums tracking-[0.05em] text-faint">
+    <section className="relative overflow-hidden rounded-[12px] border border-tint/[0.065] bg-surface/85 shadow-[0_1px_0_rgba(255,255,255,0.025),0_12px_28px_rgba(0,0,0,0.12)]">
+      <div className="pointer-events-none absolute inset-x-6 top-0 h-px bg-gradient-to-r from-transparent via-tint/[0.08] to-transparent" />
+      <div className="flex items-center gap-2 border-b border-tint/[0.055] px-3.5 py-2.5">
+        <span className="font-mono text-[10.5px] tabular-nums tracking-[0.05em] text-faint">
           {index}
         </span>
-        <div className="flex h-5 w-5 items-center justify-center rounded-[5px] border border-white/[0.07] bg-white/[0.025] text-muted">
+        <div className="flex h-5 w-5 items-center justify-center rounded-[5px] border border-tint/[0.07] bg-tint/[0.025] text-muted">
           <Icon size={10.5} />
         </div>
         <div className="min-w-0">
-          <h2 className="text-[11.5px] font-semibold tracking-[-0.005em] text-zinc-200">
+          <h2 className="text-[12.5px] font-semibold tracking-[-0.005em] text-ink">
             {title}
           </h2>
-          <p className="mt-0.5 font-mono text-[8px] uppercase tracking-[0.09em] text-faint">
+          <p className="mt-0.5 font-mono text-[10.5px] uppercase tracking-[0.09em] text-faint">
             {subtitle}
           </p>
         </div>
@@ -214,22 +214,22 @@ function SectionCard({
 
 function EmptyDAG() {
   return (
-    <div className="rounded-[9px] border border-dashed border-white/[0.08] bg-white/[0.012] px-3 py-4">
+    <div className="rounded-[9px] border border-dashed border-tint/[0.08] bg-tint/[0.012] px-3 py-4">
       <div className="flex items-center gap-2.5 opacity-55">
-        <div className="flex h-6 w-6 items-center justify-center rounded-[5px] border border-white/10 bg-white/[0.03] font-mono text-[8px] text-muted">
+        <div className="flex h-6 w-6 items-center justify-center rounded-[5px] border border-tint/10 bg-tint/[0.03] font-mono text-[10.5px] text-muted">
           q1
         </div>
-        <div className="h-px w-4 bg-white/10" />
-        <div className="h-1 flex-1 rounded-full bg-white/[0.06]" />
+        <div className="h-px w-4 bg-tint/10" />
+        <div className="h-1 flex-1 rounded-full bg-tint/[0.06]" />
         <GitBranch size={10} className="text-faint" />
       </div>
       <div className="mt-2.5 flex items-center gap-2 opacity-35">
-        <div className="ml-8 flex h-5 w-5 items-center justify-center rounded-[4px] border border-white/[0.07] bg-white/[0.02] font-mono text-[7px] text-faint">
+        <div className="ml-8 flex h-5 w-5 items-center justify-center rounded-[4px] border border-tint/[0.07] bg-tint/[0.02] font-mono text-[10px] text-faint">
           q2
         </div>
-        <div className="h-1 w-2/5 rounded-full bg-white/[0.05]" />
+        <div className="h-1 w-2/5 rounded-full bg-tint/[0.05]" />
       </div>
-      <p className="mt-3 text-[10px] leading-relaxed text-faint">
+      <p className="mt-3 text-[12px] leading-relaxed text-faint">
         Awaiting a query. The planner will emit 2–4 parallel branches, then graft a retry node
         if BM25 confidence falls below 1.5.
       </p>
@@ -297,20 +297,20 @@ export default function InspectorPane({
   }
 
   return (
-    <aside className="flex h-full min-h-0 flex-col bg-[#0B0D13]/65">
-      <div className="flex h-9 shrink-0 items-center justify-between border-b border-white/[0.045] px-4">
+    <aside className="flex h-full min-h-0 flex-col bg-panel/65">
+      <div className="flex h-9 shrink-0 items-center justify-between border-b border-tint/[0.045] px-4">
         <div className="flex items-center gap-2">
-          <Radar size={11} className="text-indigo-300/80" />
-          <span className="font-mono text-[8.5px] uppercase tracking-[0.17em] text-zinc-400">
+          <Radar size={11} className="text-accent-fg/80" />
+          <span className="font-mono text-[11px] uppercase tracking-[0.17em] text-muted">
             Glass-box inspector
           </span>
         </div>
         <div className="flex items-center gap-2">
-          <span className="hidden font-mono text-[7.5px] uppercase tracking-[0.1em] text-faint sm:inline">
+          <span className="hidden font-mono text-[10px] uppercase tracking-[0.1em] text-faint sm:inline">
             {providers.llm ? "synthesis · llm" : "synthesis · extractive"}
           </span>
-          <span className="h-3 w-px bg-white/[0.08]" />
-          <span className="flex items-center gap-1.5 font-mono text-[7.5px] uppercase tracking-[0.1em] text-muted">
+          <span className="h-3 w-px bg-tint/[0.08]" />
+          <span className="flex items-center gap-1.5 font-mono text-[10px] uppercase tracking-[0.1em] text-muted">
             <span
               className={clsx(
                 "h-1.5 w-1.5 rounded-full",
@@ -330,14 +330,14 @@ export default function InspectorPane({
             subtitle="local SQLite · pre-flight memory"
             icon={Database}
             meta={
-              <span className="font-mono text-[9px] tabular-nums text-faint">
+              <span className="font-mono text-[11px] tabular-nums text-faint">
                 {hydration ? `${hydration.latency_ms}ms` : "idle"}
               </span>
             }
           >
             <div className="space-y-1.5">
               {displayEntities.length === 0 ? (
-                <p className="text-[10px] text-faint">Local context graph is still loading.</p>
+                <p className="text-[12px] text-faint">Local context graph is still loading.</p>
               ) : (
                 displayEntities.map((entity) => {
                   const matched = matchedKeys.has(entity.key);
@@ -348,36 +348,36 @@ export default function InspectorPane({
                         "group flex items-start gap-2 rounded-[7px] border px-2 py-1.5 transition-colors",
                         matched
                           ? "border-cached/15 bg-cached/[0.035]"
-                          : "border-white/[0.05] bg-white/[0.012]",
+                          : "border-tint/[0.05] bg-tint/[0.012]",
                       )}
                     >
                       <span
                         className={clsx(
                           "mt-1 h-1 w-1 shrink-0 rounded-full",
-                          matched ? "bg-cached shadow-[0_0_6px_rgba(6,182,212,0.6)]" : "bg-white/15",
+                          matched ? "bg-cached shadow-[0_0_6px_rgba(6,182,212,0.6)]" : "bg-tint/15",
                         )}
                       />
                       <div className="min-w-0 flex-1">
                         <div className="flex items-center gap-1.5">
                           <span
                             className={clsx(
-                              "truncate font-mono text-[10px] tracking-[-0.02em]",
-                              matched ? "text-cyan-200" : "text-zinc-400",
+                              "truncate font-mono text-[12px] tracking-[-0.02em]",
+                              matched ? "text-cached-fg" : "text-muted",
                             )}
                           >
                             {entity.key}
                           </span>
-                          <span className="text-[8px] text-faint">→</span>
-                          <span className="shrink-0 font-mono text-[7.5px] uppercase tracking-[0.05em] text-faint">
+                          <span className="text-[10.5px] text-faint">→</span>
+                          <span className="shrink-0 font-mono text-[10px] uppercase tracking-[0.05em] text-faint">
                             {entity.category}
                           </span>
                           {matched ? (
-                            <span className="ml-auto shrink-0 rounded-full bg-cached/10 px-1.5 py-[1px] font-mono text-[6.5px] uppercase tracking-[0.08em] text-cached/90">
+                            <span className="ml-auto shrink-0 rounded-full bg-cached/10 px-1.5 py-[1px] font-mono text-[9.5px] uppercase tracking-[0.08em] text-cached/90">
                               matched
                             </span>
                           ) : null}
                         </div>
-                        <p className="mt-0.5 line-clamp-2 text-[10.5px] leading-[1.45] text-zinc-400/85">
+                        <p className="mt-0.5 line-clamp-2 text-[12px] leading-[1.45] text-muted/85">
                           {entity.value}
                         </p>
                       </div>
@@ -388,12 +388,12 @@ export default function InspectorPane({
             </div>
 
             {hydration?.pronouns_resolved?.length ? (
-              <p className="mt-2 font-mono text-[8px] uppercase tracking-[0.04em] text-cached/70">
+              <p className="mt-2 font-mono text-[10.5px] uppercase tracking-[0.04em] text-cached/70">
                 pronoun resolution · {hydration.pronouns_resolved.join(" / ")}
               </p>
             ) : null}
 
-            <div className="mt-2.5 flex items-center gap-2 rounded-[7px] border border-white/[0.055] bg-black/20 px-2 py-1.5">
+            <div className="mt-2.5 flex items-center gap-2 rounded-[7px] border border-tint/[0.055] bg-shade/20 px-2 py-1.5">
               <Zap
                 size={10}
                 className={clsx(
@@ -406,28 +406,28 @@ export default function InspectorPane({
               />
               <div className="min-w-0 flex-1">
                 <div className="flex items-center gap-1.5">
-                  <span className="font-mono text-[7.5px] uppercase tracking-[0.1em] text-faint">
+                  <span className="font-mono text-[10px] uppercase tracking-[0.1em] text-faint">
                     speculative prefetch
                   </span>
                   <span
                     className={clsx(
-                      "rounded-full px-1.5 py-[1px] font-mono text-[6.5px] uppercase tracking-[0.08em]",
+                      "rounded-full px-1.5 py-[1px] font-mono text-[9.5px] uppercase tracking-[0.08em]",
                       speculation?.status === "WARMED"
                         ? "bg-cached/10 text-cached"
                         : speculation?.status === "WARMING"
                           ? "bg-healing/10 text-healing"
-                          : "bg-white/[0.04] text-faint",
+                          : "bg-tint/[0.04] text-faint",
                     )}
                   >
                     {speculation?.status ?? "IDLE"}
                   </span>
                   {speculation?.status === "WARMED" && speculation.savedMs > 0 ? (
-                    <span className="font-mono text-[7px] tabular-nums text-cached/70">
+                    <span className="font-mono text-[10px] tabular-nums text-cached/70">
                       −{speculation.savedMs.toLocaleString()}ms
                     </span>
                   ) : null}
                 </div>
-                <p className="mt-0.5 truncate text-[9px] text-muted">
+                <p className="mt-0.5 truncate text-[11px] text-muted">
                   {speculation?.speculativeQuery ??
                     "Debounced at 400ms · DNS + cache warmed before send"}
                 </p>
@@ -442,11 +442,11 @@ export default function InspectorPane({
             icon={GitBranch}
             meta={
               planner ? (
-                <span className="rounded-full border border-white/[0.06] bg-white/[0.025] px-1.5 py-[2px] font-mono text-[8px] uppercase tracking-[0.06em] text-faint">
+                <span className="rounded-full border border-tint/[0.06] bg-tint/[0.025] px-1.5 py-[2px] font-mono text-[10.5px] uppercase tracking-[0.06em] text-faint">
                   {planner.label} · {planner.planningMs}ms
                 </span>
               ) : (
-                <span className="font-mono text-[8px] uppercase tracking-[0.06em] text-faint">
+                <span className="font-mono text-[10.5px] uppercase tracking-[0.06em] text-faint">
                   standby
                 </span>
               )
@@ -470,7 +470,7 @@ export default function InspectorPane({
                       ) : null}
                       <div
                         className={clsx(
-                          "relative overflow-hidden rounded-[8px] border bg-[#0B0D13]/75 transition-all duration-200",
+                          "relative overflow-hidden rounded-[8px] border bg-tint/[0.018] transition-all duration-200",
                           meta.border,
                         )}
                       >
@@ -487,17 +487,17 @@ export default function InspectorPane({
                                     ? "bg-healthy/45"
                                     : node.status === "FAILED"
                                       ? "bg-danger/50"
-                                      : "bg-white/10",
+                                      : "bg-tint/10",
                           )}
                         />
                         <div className="pl-2.5 pr-2 py-2">
                           <div className="flex items-center gap-1.5">
-                            <span className="font-mono text-[9.5px] font-medium text-zinc-300">
+                            <span className="font-mono text-[11.5px] font-medium text-ink">
                               {node.id}
                             </span>
                             <span
                               className={clsx(
-                                "inline-flex items-center gap-1 rounded-full border px-1.5 py-[1px] font-mono text-[8px] uppercase tracking-[0.06em]",
+                                "inline-flex items-center gap-1 rounded-full border px-1.5 py-[1px] font-mono text-[10.5px] uppercase tracking-[0.06em]",
                                 meta.text,
                                 meta.bg,
                                 meta.border,
@@ -514,19 +514,19 @@ export default function InspectorPane({
                             </span>
                             <span
                               className={clsx(
-                                "rounded px-1 py-[1px] font-mono text-[7px] uppercase tracking-[0.05em]",
+                                "rounded px-1 py-[1px] font-mono text-[10px] uppercase tracking-[0.05em]",
                                 node.volatility === "VOLATILE"
-                                  ? "bg-healing/[0.07] text-amber-300/60"
-                                  : "bg-white/[0.035] text-faint",
+                                  ? "bg-healing/[0.07] text-healing-fg/60"
+                                  : "bg-tint/[0.035] text-faint",
                               )}
                             >
                               {node.volatility === "VOLATILE" ? "volatile" : "static"}
                             </span>
-                            <span className="ml-auto flex items-center gap-1 font-mono text-[9px] tabular-nums text-faint">
+                            <span className="ml-auto flex items-center gap-1 font-mono text-[11px] tabular-nums text-faint">
                               {typeof node.latency_ms === "number" && node.latency_ms > 0 ? (
                                 <span
                                   className={clsx(
-                                    node.status === "CACHED" ? "text-cached/80" : "text-zinc-400",
+                                    node.status === "CACHED" ? "text-cached/80" : "text-muted",
                                   )}
                                 >
                                   {node.latency_ms.toLocaleString()}ms
@@ -534,19 +534,19 @@ export default function InspectorPane({
                               ) : null}
                               {node.chunks_found ? (
                                 <>
-                                  <span className="text-white/15">·</span>
+                                  <span className="text-tint/15">·</span>
                                   <span>{node.chunks_found} ch</span>
                                 </>
                               ) : null}
                             </span>
                           </div>
-                          <p className="mt-1.5 line-clamp-2 text-[10.5px] leading-[1.5] text-zinc-400">
+                          <p className="mt-1.5 line-clamp-2 text-[12px] leading-[1.5] text-muted">
                             {node.query}
                           </p>
                           {node.detail ? (
                             <p
                               className={clsx(
-                                "mt-1 truncate font-mono text-[8px] tracking-[-0.01em]",
+                                "mt-1 truncate font-mono text-[10.5px] tracking-[-0.01em]",
                                 node.status === "HEALING"
                                   ? "text-healing/65"
                                   : node.status === "FAILED"
@@ -559,7 +559,7 @@ export default function InspectorPane({
                             </p>
                           ) : null}
                           {node.depends_on.length > 0 ? (
-                            <div className="mt-1 flex items-center gap-1 font-mono text-[7.5px] uppercase tracking-[0.05em] text-faint/70">
+                            <div className="mt-1 flex items-center gap-1 font-mono text-[10px] uppercase tracking-[0.05em] text-faint/70">
                               <GitBranch size={7} />
                               depends on {node.depends_on.join(", ")}
                             </div>
@@ -567,7 +567,7 @@ export default function InspectorPane({
                         </div>
                       </div>
                       {index < nodes.length - 1 && !isRetry && !nodes[index + 1]?.retry_of ? (
-                        <div className="ml-[9px] h-1.5 w-px bg-white/[0.08]" />
+                        <div className="ml-[9px] h-1.5 w-px bg-tint/[0.08]" />
                       ) : null}
                     </div>
                   );
@@ -583,11 +583,11 @@ export default function InspectorPane({
             icon={Search}
             meta={
               metrics ? (
-                <span className="font-mono text-[8px] uppercase tracking-[0.06em] text-cached/80">
+                <span className="font-mono text-[10.5px] uppercase tracking-[0.06em] text-cached/80">
                   {metrics.sources.length} chunks
                 </span>
               ) : (
-                <span className="font-mono text-[8px] uppercase tracking-[0.06em] text-faint">
+                <span className="font-mono text-[10.5px] uppercase tracking-[0.06em] text-faint">
                   waiting
                 </span>
               )
@@ -598,33 +598,33 @@ export default function InspectorPane({
                 <div className="mb-2 flex items-end justify-between">
                   <div>
                     <div className="flex items-baseline gap-1.5">
-                      <span className="font-mono text-[20px] font-medium tracking-[-0.06em] tabular-nums text-zinc-200">
+                      <span className="font-mono text-[20px] font-medium tracking-[-0.06em] tabular-nums text-ink">
                         {metrics.compression_pct.toFixed(1)}
-                        <span className="ml-px text-[10px] text-muted">%</span>
+                        <span className="ml-px text-[12px] text-muted">%</span>
                       </span>
-                      <span className="mb-1 font-mono text-[8px] uppercase tracking-[0.08em] text-faint">
+                      <span className="mb-1 font-mono text-[10.5px] uppercase tracking-[0.08em] text-faint">
                         noise stripped
                       </span>
                     </div>
-                    <p className="mt-0.5 text-[9px] text-muted">
+                    <p className="mt-0.5 text-[11px] text-muted">
                       {metrics.raw_tokens.toLocaleString()} raw tokens →{" "}
                       <span className="text-cached">{metrics.sieved_tokens.toLocaleString()}</span>{" "}
                       sieved
                     </p>
                   </div>
                   <div className="text-right">
-                    <p className="font-mono text-[8px] uppercase tracking-[0.08em] text-faint">
+                    <p className="font-mono text-[10.5px] uppercase tracking-[0.08em] text-faint">
                       BM25 peak
                     </p>
-                    <p className="mt-0.5 font-mono text-[14px] tabular-nums text-emerald-200/90">
+                    <p className="mt-0.5 font-mono text-[14px] tabular-nums text-healthy-fg/90">
                       {metrics.peak_bm25.toFixed(2)}
                     </p>
                   </div>
                 </div>
 
-                <div className="relative h-[8px] overflow-hidden rounded-full border border-white/[0.05] bg-white/[0.035]">
+                <div className="relative h-[8px] overflow-hidden rounded-full border border-tint/[0.05] bg-tint/[0.035]">
                   <div
-                    className="absolute inset-y-0 left-0 rounded-full bg-gradient-to-r from-indigo-500/55 via-accent/70 to-cached/80 shadow-[0_0_12px_rgba(99,102,241,0.16)] transition-all duration-700"
+                    className="absolute inset-y-0 left-0 rounded-full bg-gradient-to-r from-accent/55 via-accent/70 to-cached/80 shadow-[0_0_12px_rgba(99,102,241,0.16)] transition-all duration-700"
                     style={{
                       width: `${Math.max(
                         3,
@@ -632,38 +632,38 @@ export default function InspectorPane({
                       )}%`,
                     }}
                   />
-                  <div className="absolute inset-y-0 left-0 w-full bg-[repeating-linear-gradient(115deg,transparent,transparent_6px,rgba(255,255,255,0.02)_6px,rgba(255,255,255,0.02)_7px)]" />
+                  <div className="absolute inset-y-0 left-0 w-full sieve-stripes" />
                   <div className="shimmer-line absolute inset-y-0 w-1/4" />
                 </div>
-                <div className="mt-1 flex justify-between font-mono text-[8px] uppercase tracking-[0.06em] text-faint/70">
+                <div className="mt-1 flex justify-between font-mono text-[10.5px] uppercase tracking-[0.06em] text-faint/70">
                   <span>raw scraped</span>
                   <span>top {metrics.sources.length} / llm context</span>
                 </div>
 
                 <div className="mt-2 grid grid-cols-2 gap-1.5">
-                  <div className="rounded-[6px] border border-white/[0.055] bg-white/[0.015] px-2 py-1.5">
-                    <p className="font-mono text-[8px] uppercase tracking-[0.07em] text-faint">
+                  <div className="rounded-[6px] border border-tint/[0.055] bg-tint/[0.015] px-2 py-1.5">
+                    <p className="font-mono text-[10.5px] uppercase tracking-[0.07em] text-faint">
                       Deduped chunks
                     </p>
-                    <p className="mt-0.5 font-mono text-[11px] tabular-nums text-zinc-300">
+                    <p className="mt-0.5 font-mono text-[12.5px] tabular-nums text-ink">
                       {metrics.sources.length}{" "}
-                      <span className="text-[8px] text-faint">selected</span>
+                      <span className="text-[10.5px] text-faint">selected</span>
                     </p>
                   </div>
-                  <div className="rounded-[6px] border border-white/[0.055] bg-white/[0.015] px-2 py-1.5">
-                    <p className="font-mono text-[8px] uppercase tracking-[0.07em] text-faint">
+                  <div className="rounded-[6px] border border-tint/[0.055] bg-tint/[0.015] px-2 py-1.5">
+                    <p className="font-mono text-[10.5px] uppercase tracking-[0.07em] text-faint">
                       Context budget
                     </p>
-                    <p className="mt-0.5 font-mono text-[11px] tabular-nums text-zinc-300">
+                    <p className="mt-0.5 font-mono text-[12.5px] tabular-nums text-ink">
                       {metrics.sieved_tokens.toLocaleString()}{" "}
-                      <span className="text-[8px] text-faint">tok</span>
+                      <span className="text-[10.5px] text-faint">tok</span>
                     </p>
                   </div>
                 </div>
 
                 <div className="mt-2.5 space-y-1.5">
                   {metrics.sources.length === 0 ? (
-                    <p className="rounded-[7px] border border-dashed border-white/[0.07] px-2.5 py-2 text-[9.5px] leading-relaxed text-faint">
+                    <p className="rounded-[7px] border border-dashed border-tint/[0.07] px-2.5 py-2 text-[11.5px] leading-relaxed text-faint">
                       No usable chunks survived the sieve. The DAG emitted a self-healing branch
                       rather than inventing evidence.
                     </p>
@@ -686,10 +686,10 @@ export default function InspectorPane({
                           onMouseEnter={() => onCitationHover(source.id)}
                           onMouseLeave={() => onCitationHover(null)}
                           className={clsx(
-                            "scroll-mt-3 overflow-hidden rounded-[7px] border bg-white/[0.012] transition-all duration-200",
+                            "scroll-mt-3 overflow-hidden rounded-[7px] border bg-tint/[0.012] transition-all duration-200",
                             highlighted
                               ? "source-highlight"
-                              : "border-white/[0.055] hover:border-white/[0.1]",
+                              : "border-tint/[0.055] hover:border-tint/[0.1]",
                           )}
                         >
                           <button
@@ -698,18 +698,18 @@ export default function InspectorPane({
                             className="flex w-full items-center gap-2 px-2 py-1.5 text-left"
                             aria-expanded={expanded}
                           >
-                            <span className="shrink-0 rounded border border-cached/20 bg-cached/[0.07] px-1 py-0.5 font-mono text-[8.5px] text-cached">
+                            <span className="shrink-0 rounded border border-cached/20 bg-cached/[0.07] px-1 py-0.5 font-mono text-[11px] text-cached">
                               [{source.id}]
                             </span>
                             <span className="min-w-0 flex-1">
-                              <span className="block truncate text-[10px] font-medium text-zinc-300">
+                              <span className="block truncate text-[12px] font-medium text-ink">
                                 {source.title}
                               </span>
                               <span className="mt-0.5 flex items-center gap-1.5">
-                                <span className="truncate font-mono text-[8px] uppercase tracking-[0.06em] text-faint">
+                                <span className="truncate font-mono text-[10.5px] uppercase tracking-[0.06em] text-faint">
                                   {hostname(source.url)}
                                 </span>
-                                <span className="shrink-0 font-mono text-[7px] tabular-nums text-cached/70">
+                                <span className="shrink-0 font-mono text-[10px] tabular-nums text-cached/70">
                                   {source.bm25_score.toFixed(2)}
                                 </span>
                               </span>
@@ -723,7 +723,7 @@ export default function InspectorPane({
                             />
                           </button>
                           <div className="px-2 pb-1.5">
-                            <div className="h-[2px] overflow-hidden rounded-full bg-white/[0.04]">
+                            <div className="h-[2px] overflow-hidden rounded-full bg-tint/[0.04]">
                               <div
                                 className="h-full rounded-full bg-cached/45"
                                 style={{ width: `${barWidth}%` }}
@@ -731,19 +731,19 @@ export default function InspectorPane({
                             </div>
                           </div>
                           {expanded ? (
-                            <div className="animate-fade-in border-t border-white/[0.05] px-2 pb-2 pt-2">
-                              <p className="max-h-28 overflow-y-auto whitespace-pre-wrap text-[10px] leading-[1.55] text-muted/85 scrollbar-subtle">
+                            <div className="animate-fade-in border-t border-tint/[0.05] px-2 pb-2 pt-2">
+                              <p className="max-h-28 overflow-y-auto whitespace-pre-wrap text-[12px] leading-[1.55] text-muted/85 scrollbar-subtle">
                                 {source.text}
                               </p>
                               <div className="mt-1.5 flex items-center justify-between">
-                                <span className="font-mono text-[7.5px] uppercase tracking-[0.05em] text-faint">
+                                <span className="font-mono text-[10px] uppercase tracking-[0.05em] text-faint">
                                   {source.token_count} tok · node {source.node_id}
                                 </span>
                                 <a
                                   href={source.url}
                                   target="_blank"
                                   rel="noreferrer"
-                                  className="flex items-center gap-1 font-mono text-[8px] uppercase tracking-[0.05em] text-cached/65 transition-colors hover:text-cached"
+                                  className="flex items-center gap-1 font-mono text-[10.5px] uppercase tracking-[0.05em] text-cached/65 transition-colors hover:text-cached"
                                 >
                                   open source
                                   <ExternalLink size={7.5} />
@@ -758,13 +758,13 @@ export default function InspectorPane({
                 </div>
               </>
             ) : (
-              <div className="rounded-[8px] border border-dashed border-white/[0.07] px-3 py-3.5">
+              <div className="rounded-[8px] border border-dashed border-tint/[0.07] px-3 py-3.5">
                 <div className="flex items-center gap-2 opacity-40">
-                  <div className="h-1 w-16 rounded-full bg-white/20" />
-                  <span className="font-mono text-[7px] text-faint">→</span>
+                  <div className="h-1 w-16 rounded-full bg-tint/20" />
+                  <span className="font-mono text-[10px] text-faint">→</span>
                   <div className="h-1 w-8 rounded-full bg-cached/30" />
                 </div>
-                <p className="mt-2 text-[10px] leading-relaxed text-faint">
+                <p className="mt-2 text-[12px] leading-relaxed text-faint">
                   Raw page text will be de-tagged, chunked at 120 words with 20-word overlap, and
                   BM25-scored against each query branch.
                 </p>
@@ -778,7 +778,7 @@ export default function InspectorPane({
             subtitle="differential watcher · urgency gate"
             icon={BellRing}
             meta={
-              <span className="flex items-center gap-1 font-mono text-[8px] uppercase tracking-[0.06em] text-faint">
+              <span className="flex items-center gap-1 font-mono text-[10.5px] uppercase tracking-[0.06em] text-faint">
                 <span className="h-1 w-1 rounded-full bg-accent" />
                 {activeCount} active
               </span>
@@ -788,9 +788,9 @@ export default function InspectorPane({
               type="button"
               onClick={onSimulate}
               disabled={isSimulating}
-              className="group relative mt-0.5 flex w-full items-center justify-center gap-2 overflow-hidden rounded-[8px] border border-healing/25 bg-gradient-to-b from-healing/[0.14] to-healing/[0.065] px-3 py-2 text-[10.5px] font-medium text-amber-100 shadow-[inset_0_1px_0_rgba(255,255,255,0.07),0_8px_22px_rgba(245,158,11,0.06)] transition-all hover:border-healing/40 hover:from-healing/[0.2] disabled:cursor-wait disabled:opacity-70"
+              className="group relative mt-0.5 flex w-full items-center justify-center gap-2 overflow-hidden rounded-[8px] border border-healing/25 bg-gradient-to-b from-healing/[0.14] to-healing/[0.065] px-3 py-2 text-[12px] font-medium text-healing-fg shadow-[inset_0_1px_0_rgba(255,255,255,0.07),0_8px_22px_rgba(245,158,11,0.06)] transition-all hover:border-healing/40 hover:from-healing/[0.2] disabled:cursor-wait disabled:opacity-70"
             >
-              <span className="pointer-events-none absolute inset-y-0 -left-1/3 w-1/3 -skew-x-12 bg-white/[0.045] transition-transform duration-700 group-hover:translate-x-[420%]" />
+              <span className="pointer-events-none absolute inset-y-0 -left-1/3 w-1/3 -skew-x-12 bg-tint/[0.045] transition-transform duration-700 group-hover:translate-x-[420%]" />
               {isSimulating ? (
                 <Loader2 size={12} className="animate-spin" />
               ) : (
@@ -798,36 +798,36 @@ export default function InspectorPane({
               )}
               {isSimulating ? "Running semantic diff…" : "Simulate target webpage update"}
               {!isSimulating ? (
-                <span className="ml-0.5 rounded border border-healing/20 bg-black/15 px-1 font-mono text-[6.5px] uppercase tracking-[0.08em] text-amber-200/65">
+                <span className="ml-0.5 rounded border border-healing/20 bg-shade/15 px-1 font-mono text-[9.5px] uppercase tracking-[0.08em] text-healing-fg/65">
                   demo
                 </span>
               ) : null}
             </button>
 
-            <div className="mt-2.5 rounded-[7px] border border-white/[0.05] bg-black/15 px-2.5 py-2">
+            <div className="mt-2.5 rounded-[7px] border border-tint/[0.05] bg-shade/15 px-2.5 py-2">
               <div className="flex items-center gap-1.5">
-                <span className="font-mono text-[7.5px] uppercase tracking-[0.12em] text-faint">
+                <span className="font-mono text-[10px] uppercase tracking-[0.12em] text-faint">
                   cognitive-load guide
                 </span>
-                <span className="ml-auto font-mono text-[7.5px] uppercase tracking-[0.05em] text-zinc-500">
+                <span className="ml-auto font-mono text-[10px] uppercase tracking-[0.05em] text-faint">
                   {FOCUS_LABELS[focusLevel]} · F{focusLevel}
                 </span>
               </div>
-              <p className="mt-1.5 font-mono text-[9.5px] leading-[1.65] text-muted">
+              <p className="mt-1.5 font-mono text-[11.5px] leading-[1.65] text-muted">
                 Urgency = ({guidePriority} × {guideSensitivity}) / {focusLevel} ={" "}
-                <span className={guideGated ? "text-healing/90" : "text-emerald-200/90"}>
+                <span className={guideGated ? "text-healing/90" : "text-healthy-fg/90"}>
                   {guideUrgency.toFixed(2)}
                 </span>{" "}
                 {guideGated ? "< 2.50 → QUEUED_QUIET" : "≥ 2.50 → RELEASED"}
               </p>
-              <p className="mt-1 text-[9px] leading-[1.55] text-faint">
+              <p className="mt-1 text-[11px] leading-[1.55] text-faint">
                 {guideGated
                   ? `Deep focus protects the moment. Click Idle (1) in the top bar and this nudge flushes immediately.`
                   : "At this focus level, a triggered promise is allowed to reach you immediately."}
               </p>
             </div>
             {queuedCount > 0 ? (
-              <div className="mt-1.5 flex items-center gap-1.5 font-mono text-[8px] uppercase tracking-[0.05em] text-healing/75">
+              <div className="mt-1.5 flex items-center gap-1.5 font-mono text-[10.5px] uppercase tracking-[0.05em] text-healing/75">
                 <AlertTriangle size={8} />
                 {queuedCount} held nudge{queuedCount === 1 ? "" : "s"} waiting on focus transition
               </div>
@@ -850,19 +850,19 @@ export default function InspectorPane({
                   )}
                   <span
                     className={clsx(
-                      "font-mono text-[7px] uppercase tracking-[0.1em]",
-                      simulation.gated ? "text-amber-200/90" : "text-emerald-200/90",
+                      "font-mono text-[10px] uppercase tracking-[0.1em]",
+                      simulation.gated ? "text-healing-fg/90" : "text-healthy-fg/90",
                     )}
                   >
                     {simulation.gated ? "QUEUED_QUIET · suppressed" : "NUDGE RELEASED"}
                   </span>
-                  <span className="ml-auto font-mono text-[7px] tabular-nums text-faint">
+                  <span className="ml-auto font-mono text-[10px] tabular-nums text-faint">
                     urgency {simulation.urgency.toFixed(2)}
                   </span>
                 </div>
-                <p className="mt-1 text-[9px] leading-[1.5] text-zinc-400">{simulation.message}</p>
+                <p className="mt-1 text-[11px] leading-[1.5] text-muted">{simulation.message}</p>
                 {simulation.gated ? (
-                  <p className="mt-1.5 flex items-center gap-1 font-mono text-[7px] uppercase tracking-[0.04em] text-healing/80">
+                  <p className="mt-1.5 flex items-center gap-1 font-mono text-[10px] uppercase tracking-[0.04em] text-healing/80">
                     <Activity size={7} />
                     switch to Idle (1) in the top bar to flush
                   </p>
@@ -870,14 +870,14 @@ export default function InspectorPane({
               </div>
             ) : null}
 
-            <div className="mt-3 border-t border-white/[0.055] pt-2.5">
+            <div className="mt-3 border-t border-tint/[0.055] pt-2.5">
               <div className="mb-1.5 flex items-center justify-between">
-                <span className="font-mono text-[7.5px] uppercase tracking-[0.11em] text-faint">caught promises</span>
-                <span className="font-mono text-[7.5px] uppercase tracking-[0.06em] text-faint/80">{activeCount} monitored</span>
+                <span className="font-mono text-[10px] uppercase tracking-[0.11em] text-faint">caught promises</span>
+                <span className="font-mono text-[10px] uppercase tracking-[0.06em] text-faint/80">{activeCount} monitored</span>
               </div>
             {activePromises.length === 0 ? (
-              <div className="rounded-[8px] border border-dashed border-white/[0.07] px-3 py-3">
-                <p className="text-[10px] leading-relaxed text-faint">
+              <div className="rounded-[8px] border border-dashed border-tint/[0.07] px-3 py-3">
+                <p className="text-[12px] leading-relaxed text-faint">
                   No promises caught yet. Include a commitment in a query, or run the simulator
                   to create the seeded Rahul demo promise.
                 </p>
@@ -890,15 +890,15 @@ export default function InspectorPane({
                   return (
                     <div
                       key={promise.id}
-                      className="rounded-[8px] border border-white/[0.06] bg-white/[0.015] px-2.5 py-2"
+                      className="rounded-[8px] border border-tint/[0.06] bg-tint/[0.015] px-2.5 py-2"
                     >
                       <div className="flex items-center gap-1.5">
-                        <span className="truncate font-mono text-[9px] text-zinc-300">
+                        <span className="truncate font-mono text-[11px] text-ink">
                           {promise.id}
                         </span>
                         <span
                           className={clsx(
-                            "ml-auto inline-flex items-center gap-1 rounded-full border px-1.5 py-[1px] font-mono text-[7.5px] uppercase tracking-[0.05em]",
+                            "ml-auto inline-flex items-center gap-1 rounded-full border px-1.5 py-[1px] font-mono text-[10px] uppercase tracking-[0.05em]",
                             meta.text,
                             meta.bg,
                             meta.border,
@@ -908,31 +908,31 @@ export default function InspectorPane({
                           {meta.label}
                         </span>
                       </div>
-                      <p className="mt-1.5 line-clamp-2 text-[10.5px] leading-[1.45] text-zinc-300">
-                        To <span className="text-zinc-100">{promise.recipient}</span> ·{" "}
+                      <p className="mt-1.5 line-clamp-2 text-[12px] leading-[1.45] text-ink">
+                        To <span className="text-ink-strong">{promise.recipient}</span> ·{" "}
                         {promise.promised_action}
                       </p>
-                      <p className="mt-1 line-clamp-1 text-[9px] text-faint" title={promise.trigger_condition}>
+                      <p className="mt-1 line-clamp-1 text-[11px] text-faint" title={promise.trigger_condition}>
                         ⤷ {promise.trigger_condition}
                       </p>
                       <div className="mt-1.5 flex items-center gap-1.5">
-                        <span className="truncate font-mono text-[8px] uppercase tracking-[0.04em] text-muted">
+                        <span className="truncate font-mono text-[10.5px] uppercase tracking-[0.04em] text-muted">
                           {hostname(promise.watch_url)}
                         </span>
-                        <span className="ml-auto shrink-0 rounded bg-white/[0.035] px-1 py-[1px] font-mono text-[7.5px] tabular-nums text-faint">
+                        <span className="ml-auto shrink-0 rounded bg-tint/[0.035] px-1 py-[1px] font-mono text-[10px] tabular-nums text-faint">
                           {shortHash(promise.last_dom_hash)}
                         </span>
                       </div>
-                      <div className="mt-1.5 flex items-center gap-1.5 border-t border-white/[0.045] pt-1.5 font-mono text-[9px] tabular-nums text-faint">
+                      <div className="mt-1.5 flex items-center gap-1.5 border-t border-tint/[0.045] pt-1.5 font-mono text-[11px] tabular-nums text-faint">
                         <span>P{promise.priority}</span>
-                        <span className="text-white/15">×</span>
+                        <span className="text-tint/15">×</span>
                         <span>T{promise.time_sensitivity}</span>
-                        <span className="text-white/15">÷</span>
+                        <span className="text-tint/15">÷</span>
                         <span>F{focusLevel}</span>
-                        <span className="text-white/15">=</span>
+                        <span className="text-tint/15">=</span>
                         <span
                           className={clsx(
-                            urgency >= 2.5 ? "text-emerald-300/85" : "text-healing/85",
+                            urgency >= 2.5 ? "text-healthy-fg/85" : "text-healing/85",
                           )}
                         >
                           {urgency.toFixed(2)}
@@ -953,10 +953,10 @@ export default function InspectorPane({
           </SectionCard>
 
           <div className="flex items-center justify-between px-1 pb-1 pt-0.5">
-            <span className="font-mono text-[7px] uppercase tracking-[0.1em] text-faint/70">
+            <span className="font-mono text-[10px] uppercase tracking-[0.1em] text-faint/70">
               chronos / glass-box
             </span>
-            <span className="flex items-center gap-1.5 font-mono text-[7px] uppercase tracking-[0.08em] text-faint/70">
+            <span className="flex items-center gap-1.5 font-mono text-[10px] uppercase tracking-[0.08em] text-faint/70">
               <Clock3 size={7.5} />
               DOM poller armed
             </span>

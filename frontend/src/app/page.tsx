@@ -686,7 +686,7 @@ export default function Page() {
       />
 
       <main className="grid min-h-0 flex-1 grid-cols-12 overflow-hidden">
-        <section className="relative col-span-12 flex min-h-0 min-w-0 flex-col border-r border-white/[0.07] lg:col-span-7">
+        <section className="relative col-span-12 flex min-h-0 min-w-0 flex-col border-r border-tint/[0.07] lg:col-span-7">
           <ChatPane
             input={input}
             onInputChange={handleInputChange}
@@ -740,18 +740,18 @@ export default function Page() {
         <div className="absolute right-4 top-14 z-50 w-[min(92vw,430px)] animate-fade-up">
           <div className="glass-popover flex items-start gap-2.5 rounded-[11px] border-danger/20 px-3 py-2.5">
             <div className="mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-[5px] bg-danger/10">
-              <AlertTriangle size={11} className="text-rose-300" />
+              <AlertTriangle size={11} className="text-danger-fg" />
             </div>
             <div className="min-w-0 flex-1">
-              <p className="font-mono text-[8px] uppercase tracking-[0.12em] text-rose-300/80">
+              <p className="font-mono text-[10.5px] uppercase tracking-[0.12em] text-danger-fg/80">
                 Engine notice
               </p>
-              <p className="mt-1 text-[10.5px] leading-relaxed text-zinc-300">{errorBanner}</p>
+              <p className="mt-1 text-[12px] leading-relaxed text-ink">{errorBanner}</p>
             </div>
             <button
               type="button"
               onClick={() => setErrorBanner(null)}
-              className="flex h-5 w-5 shrink-0 items-center justify-center rounded text-faint transition-colors hover:bg-white/[0.06] hover:text-zinc-300"
+              className="flex h-5 w-5 shrink-0 items-center justify-center rounded text-faint transition-colors hover:bg-tint/[0.06] hover:text-ink"
               aria-label="Dismiss error"
             >
               <X size={11} />

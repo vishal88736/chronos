@@ -92,7 +92,7 @@ class ScraperPool:
         vol = volatility.value if isinstance(volatility, Volatility) else volatility
         ttl = STATIC_TTL_SECONDS if vol == "STATIC" else VOLATILE_TTL_SECONDS
 
-        cached = await db.get_cached_query(query)
+        cached = await db.get_cached_query(query, vol)
         if cached is not None:
             latency = max(1, int((time.perf_counter() - started) * 1000))
             logger.info("epistemic cache hit for %r (%ds old)", query[:70], cached["age_seconds"])
@@ -228,6 +228,21 @@ class ScraperPool:
             errors.append("DuckDuckGo timed out")
         except Exception as exc:  # noqa: BLE001
             errors.append(f"DuckDuckGo: {str(exc)[:240]}")
+
+        # One retry with a short backoff. DuckDuckGo's bot challenge is
+        # frequently transient, and a single failed branch is enough to send
+        # the whole DAG down the self-healing path.
+        await asyncio.sleep(0.35)
+        try:
+            results = await asyncio.wait_for(self._duckduckgo(query), timeout=7.0)
+            if results:
+                logger.info("duckduckgo recovered on retry for %r", query[:70])
+                return results[:MAX_SEARCH_RESULTS], "duckduckgo", errors
+            errors.append("DuckDuckGo retry returned no results")
+        except asyncio.TimeoutError:
+            errors.append("DuckDuckGo retry timed out")
+        except Exception as exc:  # noqa: BLE001
+            errors.append(f"DuckDuckGo retry: {str(exc)[:240]}")
         return [], "none", errors
 
     async def _tavily(self, query: str) -> list[SearchResult]:
@@ -286,7 +301,7 @@ class ScraperPool:
         return results
 
     async def _duckduckgo(self, query: str) -> list[SearchResult]:
-        """Try the maintained package, then the static HTML endpoint."""
+        """Try the maintained package, then the static HTML endpoints."""
         package_results = await self._duckduckgo_package(query)
         if package_results:
             return package_results
@@ -326,29 +341,60 @@ class ScraperPool:
         return results
 
     async def _duckduckgo_html(self, query: str) -> list[SearchResult]:
+        """Scrape DuckDuckGo's HTML surfaces directly.
+
+        The `html.duckduckgo.com` form is the best-behaved endpoint but it
+        answers a surprising number of requests with `202 Accepted`, which is
+        their bot challenge rather than a result page. The `lite` surface uses
+        a much simpler markup and is far less likely to challenge us, and a GET
+        variant of the main form sometimes slips past where a POST does not.
+        All three are tried in turn.
+        """
+        attempts: tuple[tuple[str, str, str, dict[str, str]], ...] = (
+            ("duckduckgo_html", "POST", "https://html.duckduckgo.com/html/", {"q": query, "kl": "us-en"}),
+            ("duckduckgo_html_get", "GET", "https://html.duckduckgo.com/html/", {"q": query}),
+            ("duckduckgo_lite", "POST", "https://lite.duckduckgo.com/lite/", {"q": query}),
+        )
+        for provider, method, url, params in attempts:
+            results = await self._fetch_html_results(provider, method, url, params)
+            if results:
+                return results
+        return []
+
+    async def _fetch_html_results(
+        self, provider: str, method: str, url: str, params: dict[str, str]
+    ) -> list[SearchResult]:
         try:
             async with httpx.AsyncClient(
                 timeout=6.0, follow_redirects=True, headers=_BASE_HEADERS
             ) as client:
-                response = await client.post(
-                    "https://html.duckduckgo.com/html/",
-                    data={"q": query, "kl": "us-en"},
-                )
+                if method == "GET":
+                    response = await client.get(url, params=params)
+                else:
+                    response = await client.post(url, data=params)
                 if response.status_code != 200:
-                    logger.warning("duckduckgo html returned %s", response.status_code)
+                    logger.warning(
+                        "%s returned %s for %r", provider, response.status_code, params.get("q", "")[:60]
+                    )
                     return []
                 html = response.text
         except Exception as exc:  # noqa: BLE001
-            logger.warning("duckduckgo html fallback failed: %s", str(exc)[:200])
+            logger.warning("%s fallback failed: %s", provider, str(exc)[:200])
             return []
 
+        if provider == "duckduckgo_lite":
+            return self._parse_lite_html(html, provider)
+        return self._parse_ddg_html(html, provider)
+
+    @staticmethod
+    def _parse_ddg_html(html: str, provider: str) -> list[SearchResult]:
         soup = BeautifulSoup(html, "html.parser")
         results: list[SearchResult] = []
         for container in soup.select(".result"):
             link = container.select_one("a.result__a")
             if link is None:
                 continue
-            url = self._unwrap_duckduckgo_url(str(link.get("href") or ""))
+            url = ScraperPool._unwrap_duckduckgo_url(str(link.get("href") or ""))
             if not url.startswith(("http://", "https://")):
                 continue
             snippet_el = container.select_one(".result__snippet")
@@ -358,7 +404,35 @@ class ScraperPool:
                     title=link.get_text(" ", strip=True)[:300] or url,
                     url=url,
                     snippet=snippet[:3000],
-                    provider="duckduckgo_html",
+                    provider=provider,
+                )
+            )
+            if len(results) >= MAX_SEARCH_RESULTS:
+                break
+        return results
+
+    @staticmethod
+    def _parse_lite_html(html: str, provider: str) -> list[SearchResult]:
+        """Parse the `lite.duckduckgo.com` table layout."""
+        soup = BeautifulSoup(html, "html.parser")
+        results: list[SearchResult] = []
+        for anchor in soup.select("a.result-link"):
+            url = ScraperPool._unwrap_duckduckgo_url(str(anchor.get("href") or ""))
+            if not url.startswith(("http://", "https://")):
+                continue
+            snippet = ""
+            # The snippet lives in the next table row after the link row.
+            row = anchor.find_parent("tr")
+            if row is not None:
+                sibling = row.find_next_sibling("tr")
+                if sibling is not None:
+                    snippet = sibling.get_text(" ", strip=True)
+            results.append(
+                SearchResult(
+                    title=anchor.get_text(" ", strip=True)[:300] or url,
+                    url=url,
+                    snippet=snippet[:3000],
+                    provider=provider,
                 )
             )
             if len(results) >= MAX_SEARCH_RESULTS:

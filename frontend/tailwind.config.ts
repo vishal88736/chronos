@@ -8,19 +8,29 @@ const config: Config = {
   theme: {
     extend: {
       colors: {
-        canvas: "#090A0F",
-        surface: "#11131A",
-        panel: "#0C0E14",
-        elevated: "#151822",
-        ink: "#E8EAF2",
-        muted: "#8D93A6",
-        faint: "#5C6275",
-        accent: "#6366F1",
-        cached: "#06B6D4",
-        healing: "#F59E0B",
-        healthy: "#10B981",
-        danger: "#F43F5E",
-        hairline: "rgba(255,255,255,0.08)",
+        canvas: "rgb(var(--canvas) / <alpha-value>)",
+        surface: "rgb(var(--surface) / <alpha-value>)",
+        panel: "rgb(var(--panel) / <alpha-value>)",
+        "panel-strong": "rgb(var(--panel-strong) / <alpha-value>)",
+        elevated: "rgb(var(--elevated) / <alpha-value>)",
+        field: "rgb(var(--field) / <alpha-value>)",
+        ink: "rgb(var(--ink) / <alpha-value>)",
+        "ink-strong": "rgb(var(--ink-strong) / <alpha-value>)",
+        muted: "rgb(var(--muted) / <alpha-value>)",
+        faint: "rgb(var(--faint) / <alpha-value>)",
+        tint: "rgb(var(--tint) / <alpha-value>)",
+        shade: "rgb(var(--shade) / <alpha-value>)",
+        accent: "rgb(var(--accent) / <alpha-value>)",
+        "accent-fg": "rgb(var(--accent-fg) / <alpha-value>)",
+        cached: "rgb(var(--cached) / <alpha-value>)",
+        "cached-fg": "rgb(var(--cached-fg) / <alpha-value>)",
+        healing: "rgb(var(--healing) / <alpha-value>)",
+        "healing-fg": "rgb(var(--healing-fg) / <alpha-value>)",
+        healthy: "rgb(var(--healthy) / <alpha-value>)",
+        "healthy-fg": "rgb(var(--healthy-fg) / <alpha-value>)",
+        danger: "rgb(var(--danger) / <alpha-value>)",
+        "danger-fg": "rgb(var(--danger-fg) / <alpha-value>)",
+        hairline: "rgb(var(--hairline) / 0.08)",
       },
       fontFamily: {
         sans: [
@@ -41,19 +51,20 @@ const config: Config = {
         ],
       },
       boxShadow: {
-        glass: "0 24px 80px rgba(0, 0, 0, 0.52), 0 2px 8px rgba(0, 0, 0, 0.32)",
-        "glow-accent": "0 0 32px rgba(99, 102, 241, 0.24)",
-        "glow-cyan": "0 0 24px rgba(6, 182, 212, 0.18)",
+        glass:
+          "0 24px 80px rgb(var(--shadow) / 0.52), 0 2px 8px rgb(var(--shadow) / 0.32)",
+        "glow-accent": "0 0 32px rgb(var(--accent) / 0.24)",
+        "glow-cyan": "0 0 24px rgb(var(--cached) / 0.18)",
       },
       backgroundImage: {
         "dot-grid":
-          "radial-gradient(rgba(255,255,255,0.055) 0.7px, transparent 0.7px)",
+          "radial-gradient(rgb(var(--grid-dot) / 0.055) 0.7px, transparent 0.7px)",
       },
       animation: {
         "fade-up": "fade-up 420ms cubic-bezier(0.16, 1, 0.3, 1) both",
         "fade-in": "fade-in 320ms ease-out both",
         "pulse-soft": "pulse-soft 2.2s ease-in-out infinite",
-        "sweep": "sweep 2.6s linear infinite",
+        sweep: "sweep 2.6s linear infinite",
       },
       keyframes: {
         "fade-up": {

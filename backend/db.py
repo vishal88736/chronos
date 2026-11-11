@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 import re
 import time
@@ -25,6 +26,8 @@ from dotenv import load_dotenv
 
 BASE_DIR = Path(__file__).resolve().parent
 load_dotenv(BASE_DIR / ".env")
+
+logger = logging.getLogger("chronos.db")
 
 _raw_db_path = os.getenv("CHRONOS_DB_PATH", "chronos.db").strip() or "chronos.db"
 DB_PATH = Path(_raw_db_path).expanduser()
@@ -92,11 +95,16 @@ _PROMISE_UPDATE_COLUMNS = {
 
 @asynccontextmanager
 async def connect() -> AsyncIterator[aiosqlite.Connection]:
-    """Open a tuned, short-lived connection with dict-like rows."""
+    """Open a tuned, short-lived connection with dict-like rows.
+
+    `journal_mode` is persistent in the database file, so it is applied once
+    during `init_db` instead of on every connection. Re-issuing it per
+    connection took a write lock on every read and was a needless source of
+    "database is locked" contention between the watcher and a live stream.
+    """
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
         await db.execute("PRAGMA busy_timeout=5000")
-        await db.execute("PRAGMA journal_mode=WAL")
         await db.execute("PRAGMA synchronous=NORMAL")
         yield db
 
@@ -105,6 +113,7 @@ async def init_db() -> None:
     """Create the schema and seed the context graph exactly once."""
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     async with connect() as db:
+        await db.execute("PRAGMA journal_mode=WAL")
         await db.executescript(SCHEMA)
         count_row = await (await db.execute("SELECT COUNT(*) AS n FROM memory_entities")).fetchone()
         if count_row is not None and int(count_row["n"]) == 0:
@@ -114,6 +123,7 @@ async def init_db() -> None:
                 [(key, value, category, now) for key, value, category in SEED_ENTITIES],
             )
         await db.commit()
+    await purge_expired_cache()
 
 
 def normalize_query(query: str) -> str:
@@ -123,8 +133,16 @@ def normalize_query(query: str) -> str:
     return " ".join(collapsed.split())
 
 
-def query_hash(query: str) -> str:
-    return hashlib.sha256(normalize_query(query).encode("utf-8")).hexdigest()
+def query_hash(query: str, volatility: str = "VOLATILE") -> str:
+    """Cache key for a query.
+
+    Volatility is part of the key on purpose. A STATIC answer is allowed to
+    live for a day while a VOLATILE one expires in minutes, so the two can
+    never share a row — otherwise a fresh-looking STATIC entry would be served
+    to a query that explicitly asked for live data, and vice versa.
+    """
+    normalized = f"{volatility.strip().upper()}|{normalize_query(query)}"
+    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
 
 
 # ── Memory entities ───────────────────────────────────────────────────────────
@@ -202,9 +220,9 @@ def _cache_row(row: aiosqlite.Row, now: int) -> dict[str, Any]:
     }
 
 
-async def get_cached_query(query: str) -> dict[str, Any] | None:
-    """Return a fresh cache entry, or None. Expired rows are left as tombstones."""
-    digest = query_hash(query)
+async def get_cached_query(query: str, volatility: str = "VOLATILE") -> dict[str, Any] | None:
+    """Return a fresh cache entry for this query+volatility, or None."""
+    digest = query_hash(query, volatility)
     now = int(time.time())
     async with connect() as db:
         row = await (await db.execute(
@@ -222,9 +240,9 @@ async def put_cached_query(
     chunks: Iterable[dict[str, Any]],
     ttl_seconds: int,
 ) -> None:
-    digest = query_hash(query)
     if volatility not in {"STATIC", "VOLATILE"}:
         raise ValueError("volatility must be STATIC or VOLATILE")
+    digest = query_hash(query, volatility)
     now = int(time.time())
     async with connect() as db:
         await db.execute(
@@ -244,14 +262,32 @@ async def put_cached_query(
         await db.commit()
 
 
-async def get_cached_query_any(query: str) -> dict[str, Any] | None:
+async def get_cached_query_any(query: str, volatility: str = "VOLATILE") -> dict[str, Any] | None:
     """Read a row regardless of freshness (used by the speculation warmer)."""
-    digest = query_hash(query)
+    digest = query_hash(query, volatility)
     async with connect() as db:
         row = await (await db.execute(
             "SELECT * FROM epistemic_cache WHERE query_hash = ?", (digest,)
         )).fetchone()
     return _cache_row(row, int(time.time())) if row else None
+
+
+async def purge_expired_cache() -> int:
+    """Delete rows whose TTL has elapsed. Returns the number removed.
+
+    Expired entries used to be left behind as tombstones, which grew the
+    database without bound and made every cache lookup slower over time.
+    """
+    now = int(time.time())
+    async with connect() as db:
+        cursor = await db.execute(
+            "DELETE FROM epistemic_cache WHERE created_at + ttl_seconds <= ?", (now,)
+        )
+        deleted = cursor.rowcount or 0
+        await db.commit()
+    if deleted:
+        logger.info("purged %d expired epistemic cache row(s)", deleted)
+    return int(deleted)
 
 
 # ── Promises ──────────────────────────────────────────────────────────────────

@@ -129,15 +129,22 @@ class PromiseDaemon:
         self,
         user_message: str,
         sources: list[dict[str, Any]] | list[SourceChunk],
-    ) -> dict[str, Any] | None:
+    ) -> tuple[dict[str, Any] | None, bool]:
+        """Catch a commitment.
+
+        Returns `(record, is_duplicate)`. A duplicate is an existing promise
+        that matches the same recipient/action/watch target — it is returned so
+        the caller can show it, but it must not be re-announced as a freshly
+        caught promise.
+        """
         normalized_sources = [self._source_dict(source) for source in sources]
         if not COMMITMENT_HINT.search(user_message):
-            return None
+            return None, False
         extracted = await self._llm_extract_promise(user_message, normalized_sources)
         if extracted is None:
             extracted = self._deterministic_extract_promise(user_message)
         if extracted is None:
-            return None
+            return None, False
 
         watch_url = self._valid_url(extracted.get("watch_url"))
         source_urls = {
@@ -151,21 +158,21 @@ class PromiseDaemon:
             )
         if not watch_url:
             logger.info("commitment detected but no watch URL was available")
-            return None
+            return None, False
 
         recipient = " ".join(str(extracted.get("recipient") or "your team").split())[:120]
         promised_action = " ".join(str(extracted.get("promised_action") or "").split())[:400]
         trigger_condition = " ".join(str(extracted.get("trigger_condition") or "").split())[:400]
         trigger_condition = self._expand_trigger(trigger_condition, user_message)
         if not promised_action or not trigger_condition:
-            return None
+            return None, False
         priority = self._clamp_int(extracted.get("priority"), 2)
         sensitivity = self._clamp_int(extracted.get("time_sensitivity"), 2)
 
         duplicate = await db.find_duplicate_promise(recipient, promised_action, watch_url)
         if duplicate is not None:
             logger.info("promise deduplicated against %s", duplicate["id"])
-            return duplicate
+            return duplicate, True
 
         promise_id = f"pm_{uuid.uuid4().hex[:12]}"
         record = {
@@ -194,7 +201,7 @@ class PromiseDaemon:
         await broker.publish(
             {"type": "PROMISE_CAUGHT", "promise": CaughtPromise.model_validate(persisted).model_dump(mode="json")}
         )
-        return persisted
+        return persisted, False
 
     async def _llm_extract_promise(
         self, user_message: str, sources: list[dict[str, Any]]
@@ -417,8 +424,14 @@ class PromiseDaemon:
         while True:
             try:
                 promises = await db.promises_due_for_watch()
-                for promise in promises:
-                    await self._poll_promise(promise)
+                if promises:
+                    # Poll concurrently: a single slow or unreachable watch
+                    # target used to delay every other promise by its full
+                    # timeout, which stretched a cycle past its interval.
+                    await asyncio.gather(
+                        *(self._poll_promise(promise) for promise in promises),
+                        return_exceptions=True,
+                    )
             except asyncio.CancelledError:
                 raise
             except Exception as exc:  # noqa: BLE001 - watcher must survive one bad page

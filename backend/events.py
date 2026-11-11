@@ -15,12 +15,17 @@ logger = logging.getLogger("chronos.events")
 
 
 class EventBroker:
-    """Fan-out broker with one bounded queue per connected SSE client."""
+    """Fan-out broker with one bounded queue per connected SSE client.
+
+    Subscription bookkeeping is deliberately lock-free. Every mutation happens
+    inside a single event-loop step with no `await` in between, so it is
+    already atomic — and a lock would make `unsubscribe` a cancellation point,
+    which is exactly where it runs when a browser tab closes mid-stream.
+    """
 
     def __init__(self, queue_size: int = 64) -> None:
         self._subscribers: set[asyncio.Queue[dict[str, Any]]] = set()
         self._queue_size = queue_size
-        self._lock = asyncio.Lock()
 
     @property
     def subscriber_count(self) -> int:
@@ -28,14 +33,12 @@ class EventBroker:
 
     async def subscribe(self) -> asyncio.Queue[dict[str, Any]]:
         queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue(maxsize=self._queue_size)
-        async with self._lock:
-            self._subscribers.add(queue)
+        self._subscribers.add(queue)
         logger.debug("nudge subscriber connected (%d total)", len(self._subscribers))
         return queue
 
     async def unsubscribe(self, queue: asyncio.Queue[dict[str, Any]]) -> None:
-        async with self._lock:
-            self._subscribers.discard(queue)
+        self._subscribers.discard(queue)
         logger.debug("nudge subscriber disconnected (%d total)", len(self._subscribers))
 
     async def publish(self, event: dict[str, Any]) -> None:
@@ -44,9 +47,7 @@ class EventBroker:
         If a client's queue is full, its oldest event is discarded. The latest
         state is more useful than a stale backlog for an ambient UI.
         """
-        async with self._lock:
-            subscribers = list(self._subscribers)
-        for queue in subscribers:
+        for queue in list(self._subscribers):
             try:
                 queue.put_nowait(event)
             except asyncio.QueueFull:

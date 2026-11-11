@@ -14,7 +14,7 @@ from typing import Any, AsyncIterator
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, ValidationError
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -74,6 +74,10 @@ promise_daemon = PromiseDaemon(llm)
 
 _background_tasks: set[asyncio.Task[Any]] = set()
 
+# How long the nudge stream waits before emitting an SSE comment to keep
+# intermediaries from closing an idle connection.
+KEEPALIVE_SECONDS = 15.0
+
 
 class SpeculationManager:
     """Tracks debounced prefetch work and its observed cache-warming payoff."""
@@ -85,8 +89,13 @@ class SpeculationManager:
         self.saved_ms: dict[str, int] = {}
 
     async def ensure_started(self, query: str) -> tuple[bool, int]:
-        cached = await db.get_cached_query(query)
-        if cached is not None:
+        """Warm `query` in the background.
+
+        Returns `(already_warm, saved_ms)`. `saved_ms` is the wall-clock cost
+        of the prefetch, which is what the answer would otherwise have paid.
+        """
+        cached = await db.get_cached_query_any(query)
+        if cached is not None and cached.get("fresh"):
             return True, self.saved_ms.get(query, 0)
         existing = self._tasks.get(query)
         if existing is not None and not existing.done():
@@ -191,6 +200,16 @@ def _sse_headers() -> dict[str, str]:
         "Connection": "keep-alive",
         "X-Accel-Buffering": "no",
     }
+
+
+@app.exception_handler(Exception)
+async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONResponse:
+    """Return JSON instead of a bare 500 HTML page for unexpected failures."""
+    logger.exception("unhandled error on %s %s", request.method, request.url.path)
+    return JSONResponse(
+        status_code=500,
+        content={"detail": f"{type(exc).__name__}: {str(exc)[:400]}"},
+    )
 
 
 def _focus_label(level: int) -> str:
@@ -512,11 +531,11 @@ async def chat_stream(payload: ChatRequest) -> StreamingResponse:
                 done, _ = await asyncio.wait({promise_task}, timeout=6.0)
                 if promise_task in done:
                     try:
-                        caught_promise = promise_task.result()
+                        caught_promise, is_duplicate = promise_task.result()
                     except Exception as exc:  # noqa: BLE001
                         logger.warning("promise extraction failed: %s", str(exc)[:240])
-                        caught_promise = None
-                    if caught_promise is not None:
+                        caught_promise, is_duplicate = None, False
+                    if caught_promise is not None and not is_duplicate:
                         try:
                             yield _sse(
                                 PromiseCaughtEvent(promise=CaughtPromise.model_validate(caught_promise))
@@ -546,6 +565,12 @@ async def chat_stream(payload: ChatRequest) -> StreamingResponse:
                 task.cancel()
             if node_tasks:
                 await asyncio.gather(*node_tasks, return_exceptions=True)
+            # A disconnected browser should not leave the contradiction audit
+            # and the promise extraction running in the background.
+            for task in (contradiction_task, promise_task):
+                if task is not None and not task.done():
+                    task.cancel()
+                    await asyncio.gather(task, return_exceptions=True)
 
     return StreamingResponse(
         event_generator(),
@@ -567,10 +592,14 @@ async def nudge_stream(request: Request) -> StreamingResponse:
                 )
             )
             while True:
-                if await request.is_disconnected():
-                    break
+                # Deliberately no `request.is_disconnected()` here. Starlette
+                # already owns the receive channel for a StreamingResponse and
+                # cancels the generator when the peer goes away; polling the
+                # same channel competes with it for the `http.disconnect`
+                # message and can strand this generator (and its broker
+                # subscription) forever.
                 try:
-                    event = await asyncio.wait_for(queue.get(), timeout=15.0)
+                    event = await asyncio.wait_for(queue.get(), timeout=KEEPALIVE_SECONDS)
                 except asyncio.TimeoutError:
                     yield ": keep-alive\n\n"
                     continue
