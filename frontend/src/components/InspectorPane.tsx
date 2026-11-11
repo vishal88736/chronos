@@ -13,16 +13,22 @@ import {
   ExternalLink,
   Flame,
   GitBranch,
+  History,
   Loader2,
   Lock,
+  Monitor,
   Radar,
   Search,
+  ShieldCheck,
   Sparkles,
   Wrench,
   XCircle,
   Zap,
 } from "lucide-react";
+import LatencyRibbon from "@/components/LatencyRibbon";
 import type {
+  ActivityLogEntry,
+  AmbientContext,
   CaughtPromise,
   DAGNodeView,
   FocusLevel,
@@ -33,6 +39,7 @@ import type {
   SieveMetricsEvent,
   SimulationView,
   SpeculationView,
+  StageTimings,
 } from "@/types/chronos";
 
 interface InspectorPaneProps {
@@ -42,15 +49,21 @@ interface InspectorPaneProps {
   nodes: DAGNodeView[];
   planner: PlannerMeta | null;
   metrics: SieveMetricsEvent | null;
+  timings: StageTimings | null;
   promises: CaughtPromise[];
   focusLevel: FocusLevel;
   highlightedSourceId: string | null;
   onCitationHover: (sourceId: string | null) => void;
   onSimulate: () => void;
+  onSimulateCompleted: () => void;
   isSimulating: boolean;
   simulation: SimulationView | null;
   providers: Record<string, boolean>;
   connected: boolean;
+  ambient: AmbientContext | null;
+  activityLog: ActivityLogEntry[];
+  onExportTrace: () => void;
+  isExportingTrace: boolean;
 }
 
 const STATUS_META: Record<
@@ -142,6 +155,13 @@ const PROMISE_META: Record<
     border: "border-healthy/20",
     dot: "bg-healthy",
   },
+  AUTO_VERIFIED_SILENT: {
+    label: "AUTO_VERIFIED",
+    text: "text-cached-fg",
+    bg: "bg-cached/[0.09]",
+    border: "border-cached/22",
+    dot: "bg-cached",
+  },
   RESOLVED: {
     label: "RESOLVED",
     text: "text-muted",
@@ -230,11 +250,18 @@ function EmptyDAG() {
         <div className="h-1 w-2/5 rounded-full bg-tint/[0.05]" />
       </div>
       <p className="mt-3 text-[12px] leading-relaxed text-faint">
-        Awaiting a query. The planner will emit 2–4 parallel branches, then graft a retry node
-        if BM25 confidence falls below 1.5.
+        Wave 1 resolves the unknown parts of the question in parallel. Wave 2 then interpolates
+        what wave 1 actually found into a sharper follow-up.
       </p>
     </div>
   );
+}
+
+function authorityTone(score: number): string {
+  if (score >= 0.9) return "text-healthy-fg/90 bg-healthy/[0.09] border-healthy/20";
+  if (score >= 0.7) return "text-cached-fg/90 bg-cached/[0.09] border-cached/20";
+  if (score <= 0.4) return "text-danger-fg/85 bg-danger/[0.07] border-danger/20";
+  return "text-muted bg-tint/[0.04] border-tint/[0.08]";
 }
 
 export default function InspectorPane({
@@ -244,15 +271,21 @@ export default function InspectorPane({
   nodes,
   planner,
   metrics,
+  timings,
   promises,
   focusLevel,
   highlightedSourceId,
   onCitationHover,
   onSimulate,
+  onSimulateCompleted,
   isSimulating,
   simulation,
   providers,
   connected,
+  ambient,
+  activityLog,
+  onExportTrace,
+  isExportingTrace,
 }: InspectorPaneProps) {
   const [expandedSources, setExpandedSources] = useState<Set<string>>(new Set());
 
@@ -270,6 +303,9 @@ export default function InspectorPane({
   const guideSensitivity = guidePromise?.time_sensitivity ?? 2;
   const guideUrgency = (guidePriority * guideSensitivity) / focusLevel;
   const guideGated = guideUrgency < 2.5;
+
+  const waveOne = nodes.filter((node) => (node.wave ?? 1) === 1);
+  const waveTwo = nodes.filter((node) => (node.wave ?? 1) === 2);
 
   useEffect(() => {
     if (!highlightedSourceId) return;
@@ -294,6 +330,114 @@ export default function InspectorPane({
       else next.add(sourceId);
       return next;
     });
+  }
+
+  function renderNode(node: DAGNodeView, isRetry: boolean) {
+    const meta = STATUS_META[node.status];
+    const StatusIcon = meta.icon;
+    return (
+      <div key={node.id} className={clsx("relative", isRetry && "ml-[18px]")}>
+        {isRetry ? (
+          <div className="pointer-events-none absolute -left-[13px] -top-3 h-[22px] w-[13px] rounded-bl-[5px] border-b border-l border-healing/30" />
+        ) : null}
+        <div
+          className={clsx(
+            "relative overflow-hidden rounded-[8px] border bg-tint/[0.018] transition-all duration-200",
+            meta.border,
+          )}
+        >
+          <div
+            className={clsx(
+              "absolute inset-y-0 left-0 w-[2px]",
+              node.status === "SCRAPING"
+                ? "bg-accent/60"
+                : node.status === "HEALING"
+                  ? "bg-healing/60"
+                  : node.status === "CACHED"
+                    ? "bg-cached/50"
+                    : node.status === "DONE"
+                      ? "bg-healthy/45"
+                      : node.status === "FAILED"
+                        ? "bg-danger/50"
+                        : "bg-tint/10",
+            )}
+          />
+          <div className="pl-2.5 pr-2 py-2">
+            <div className="flex items-center gap-1.5">
+              <span className="font-mono text-[11.5px] font-medium text-ink">{node.id}</span>
+              <span
+                className={clsx(
+                  "inline-flex items-center gap-1 rounded-full border px-1.5 py-[1px] font-mono text-[10.5px] uppercase tracking-[0.06em]",
+                  meta.text,
+                  meta.bg,
+                  meta.border,
+                )}
+              >
+                <StatusIcon
+                  size={7.5}
+                  className={clsx(
+                    node.status === "SCRAPING" && "animate-spin",
+                    meta.pulse && "animate-pulse",
+                  )}
+                />
+                {meta.label}
+              </span>
+              <span
+                className={clsx(
+                  "rounded px-1 py-[1px] font-mono text-[10px] uppercase tracking-[0.05em]",
+                  node.volatility === "VOLATILE"
+                    ? "bg-healing/[0.07] text-healing-fg/60"
+                    : "bg-tint/[0.035] text-faint",
+                )}
+              >
+                {node.volatility === "VOLATILE" ? "volatile" : "static"}
+              </span>
+              <span className="ml-auto flex items-center gap-1 font-mono text-[11px] tabular-nums text-faint">
+                {typeof node.latency_ms === "number" && node.latency_ms > 0 ? (
+                  <span
+                    className={clsx(
+                      node.status === "CACHED" ? "text-cached/80" : "text-muted",
+                    )}
+                  >
+                    {node.latency_ms.toLocaleString()}ms
+                  </span>
+                ) : null}
+                {node.chunks_found ? (
+                  <>
+                    <span className="text-tint/15">·</span>
+                    <span>{node.chunks_found} ch</span>
+                  </>
+                ) : null}
+              </span>
+            </div>
+            <p className="mt-1.5 line-clamp-2 text-[12px] leading-[1.5] text-muted">
+              {node.query}
+            </p>
+            {node.detail ? (
+              <p
+                className={clsx(
+                  "mt-1 truncate font-mono text-[10.5px] tracking-[-0.01em]",
+                  node.status === "HEALING"
+                    ? "text-healing/65"
+                    : node.status === "FAILED"
+                      ? "text-danger/75"
+                      : "text-faint/75",
+                )}
+                title={node.detail}
+              >
+                ↳ {node.detail}
+              </p>
+            ) : null}
+            {node.depends_on.length > 0 ? (
+              <div className="mt-1 flex items-center gap-1 font-mono text-[10px] uppercase tracking-[0.05em] text-faint/70">
+                <GitBranch size={7} />
+                depends on {node.depends_on.join(", ")}
+              </div>
+            ) : null}
+          </div>
+        </div>
+      </div>
+    );
   }
 
   return (
@@ -326,16 +470,56 @@ export default function InspectorPane({
         <div className="space-y-2.5 p-3">
           <SectionCard
             index="01"
-            title="Hydration & speculation"
-            subtitle="local SQLite · pre-flight memory"
-            icon={Database}
+            title="Stage latency"
+            subtitle="millisecond budget · flight recorder"
+            icon={Activity}
             meta={
               <span className="font-mono text-[11px] tabular-nums text-faint">
-                {hydration ? `${hydration.latency_ms}ms` : "idle"}
+                {timings ? `${timings.total}ms` : "idle"}
               </span>
             }
           >
-            <div className="space-y-1.5">
+            <LatencyRibbon
+              timings={timings}
+              onExport={onExportTrace}
+              exporting={isExportingTrace}
+            />
+          </SectionCard>
+
+          <SectionCard
+            index="02"
+            title="Ambient OS context"
+            subtitle="window + clipboard · local only"
+            icon={Monitor}
+            meta={
+              <span className="font-mono text-[10.5px] uppercase tracking-[0.08em] text-faint">
+                {ambient?.source ?? "none"}
+              </span>
+            }
+          >
+            <div className="rounded-[8px] border border-accent/15 bg-accent/[0.035] px-2.5 py-2">
+              <div className="flex items-center gap-1.5">
+                <Monitor size={10} className="text-accent-fg" />
+                <span className="font-mono text-[10px] uppercase tracking-[0.12em] text-faint">
+                  focused window
+                </span>
+              </div>
+              <p className="mt-1 text-[12px] font-medium text-ink">
+                {ambient?.app || ambient?.title || "No focused window detected"}
+              </p>
+              {ambient?.title && ambient.title !== ambient.app ? (
+                <p className="mt-0.5 truncate font-mono text-[10.5px] text-faint" title={ambient.title}>
+                  {ambient.title}
+                </p>
+              ) : null}
+              {ambient?.selection ? (
+                <p className="mt-1 line-clamp-2 rounded-[6px] bg-tint/[0.03] px-2 py-1 font-mono text-[10.5px] leading-relaxed text-muted">
+                  {ambient.selection}
+                </p>
+              ) : null}
+            </div>
+
+            <div className="mt-2 space-y-1.5">
               {displayEntities.length === 0 ? (
                 <p className="text-[12px] text-faint">Local context graph is still loading.</p>
               ) : (
@@ -354,7 +538,7 @@ export default function InspectorPane({
                       <span
                         className={clsx(
                           "mt-1 h-1 w-1 shrink-0 rounded-full",
-                          matched ? "bg-cached shadow-[0_0_6px_rgba(6,182,212,0.6)]" : "bg-tint/15",
+                          matched ? "bg-cached shadow-[0_0_6px_rgba(45,212,191,0.6)]" : "bg-tint/15",
                         )}
                       />
                       <div className="min-w-0 flex-1">
@@ -436,9 +620,9 @@ export default function InspectorPane({
           </SectionCard>
 
           <SectionCard
-            index="02"
-            title="Live DAG execution"
-            subtitle="branch topology · hedged fetches"
+            index="03"
+            title="Multi-wave DAG"
+            subtitle="wave 1 parallel · wave 2 dependent"
             icon={GitBranch}
             meta={
               planner ? (
@@ -455,131 +639,46 @@ export default function InspectorPane({
             {nodes.length === 0 ? (
               <EmptyDAG />
             ) : (
-              <div className="space-y-1.5">
-                {nodes.map((node, index) => {
-                  const meta = STATUS_META[node.status];
-                  const StatusIcon = meta.icon;
-                  const isRetry = Boolean(node.retry_of);
-                  return (
-                    <div
-                      key={node.id}
-                      className={clsx("relative", isRetry && "ml-[18px]")}
-                    >
-                      {isRetry ? (
-                        <div className="pointer-events-none absolute -left-[13px] -top-3 h-[22px] w-[13px] rounded-bl-[5px] border-b border-l border-healing/30" />
-                      ) : null}
-                      <div
-                        className={clsx(
-                          "relative overflow-hidden rounded-[8px] border bg-tint/[0.018] transition-all duration-200",
-                          meta.border,
-                        )}
-                      >
-                        <div
-                          className={clsx(
-                            "absolute inset-y-0 left-0 w-[2px]",
-                            node.status === "SCRAPING"
-                              ? "bg-accent/60"
-                              : node.status === "HEALING"
-                                ? "bg-healing/60"
-                                : node.status === "CACHED"
-                                  ? "bg-cached/50"
-                                  : node.status === "DONE"
-                                    ? "bg-healthy/45"
-                                    : node.status === "FAILED"
-                                      ? "bg-danger/50"
-                                      : "bg-tint/10",
-                          )}
-                        />
-                        <div className="pl-2.5 pr-2 py-2">
-                          <div className="flex items-center gap-1.5">
-                            <span className="font-mono text-[11.5px] font-medium text-ink">
-                              {node.id}
-                            </span>
-                            <span
-                              className={clsx(
-                                "inline-flex items-center gap-1 rounded-full border px-1.5 py-[1px] font-mono text-[10.5px] uppercase tracking-[0.06em]",
-                                meta.text,
-                                meta.bg,
-                                meta.border,
-                              )}
-                            >
-                              <StatusIcon
-                                size={7.5}
-                                className={clsx(
-                                  node.status === "SCRAPING" && "animate-spin",
-                                  meta.pulse && "animate-pulse",
-                                )}
-                              />
-                              {meta.label}
-                            </span>
-                            <span
-                              className={clsx(
-                                "rounded px-1 py-[1px] font-mono text-[10px] uppercase tracking-[0.05em]",
-                                node.volatility === "VOLATILE"
-                                  ? "bg-healing/[0.07] text-healing-fg/60"
-                                  : "bg-tint/[0.035] text-faint",
-                              )}
-                            >
-                              {node.volatility === "VOLATILE" ? "volatile" : "static"}
-                            </span>
-                            <span className="ml-auto flex items-center gap-1 font-mono text-[11px] tabular-nums text-faint">
-                              {typeof node.latency_ms === "number" && node.latency_ms > 0 ? (
-                                <span
-                                  className={clsx(
-                                    node.status === "CACHED" ? "text-cached/80" : "text-muted",
-                                  )}
-                                >
-                                  {node.latency_ms.toLocaleString()}ms
-                                </span>
-                              ) : null}
-                              {node.chunks_found ? (
-                                <>
-                                  <span className="text-tint/15">·</span>
-                                  <span>{node.chunks_found} ch</span>
-                                </>
-                              ) : null}
-                            </span>
-                          </div>
-                          <p className="mt-1.5 line-clamp-2 text-[12px] leading-[1.5] text-muted">
-                            {node.query}
-                          </p>
-                          {node.detail ? (
-                            <p
-                              className={clsx(
-                                "mt-1 truncate font-mono text-[10.5px] tracking-[-0.01em]",
-                                node.status === "HEALING"
-                                  ? "text-healing/65"
-                                  : node.status === "FAILED"
-                                    ? "text-danger/75"
-                                    : "text-faint/75",
-                              )}
-                              title={node.detail}
-                            >
-                              ↳ {node.detail}
-                            </p>
-                          ) : null}
-                          {node.depends_on.length > 0 ? (
-                            <div className="mt-1 flex items-center gap-1 font-mono text-[10px] uppercase tracking-[0.05em] text-faint/70">
-                              <GitBranch size={7} />
-                              depends on {node.depends_on.join(", ")}
-                            </div>
-                          ) : null}
-                        </div>
-                      </div>
-                      {index < nodes.length - 1 && !isRetry && !nodes[index + 1]?.retry_of ? (
-                        <div className="ml-[9px] h-1.5 w-px bg-tint/[0.08]" />
-                      ) : null}
+              <div className="space-y-3">
+                <div>
+                  <div className="mb-1.5 flex items-center gap-1.5">
+                    <span className="rounded-[5px] bg-accent/[0.1] px-1.5 py-[2px] font-mono text-[9.5px] uppercase tracking-[0.11em] text-accent-fg">
+                      wave 1
+                    </span>
+                    <span className="text-[10.5px] text-faint">
+                      independent · {waveOne.length} branch{waveOne.length === 1 ? "" : "es"}
+                    </span>
+                  </div>
+                  <div className="space-y-1.5">
+                    {waveOne.map((node) => renderNode(node, Boolean(node.retry_of)))}
+                    {waveOne.length === 0 ? (
+                      <p className="text-[11.5px] text-faint">No wave 1 branches yet.</p>
+                    ) : null}
+                  </div>
+                </div>
+
+                {waveTwo.length > 0 ? (
+                  <div className="relative">
+                    <div className="pointer-events-none absolute -left-[7px] top-[-14px] h-[16px] w-[7px] rounded-bl-[4px] border-b border-l border-accent/30" />
+                    <div className="mb-1.5 flex items-center gap-1.5">
+                      <span className="rounded-[5px] bg-cached/[0.1] px-1.5 py-[2px] font-mono text-[9.5px] uppercase tracking-[0.11em] text-cached-fg">
+                        wave 2
+                      </span>
+                      <span className="text-[10.5px] text-faint">
+                        depends on wave 1 findings
+                      </span>
                     </div>
-                  );
-                })}
+                    <div className="space-y-1.5">{waveTwo.map((node) => renderNode(node, false))}</div>
+                  </div>
+                ) : null}
               </div>
             )}
           </SectionCard>
 
           <SectionCard
-            index="03"
-            title="Context sieve"
-            subtitle="BM25 rank · two-stage compression"
+            index="04"
+            title="Authority-weighted sieve"
+            subtitle="BM25 + domain authority + freshness"
             icon={Search}
             meta={
               metrics ? (
@@ -614,17 +713,17 @@ export default function InspectorPane({
                   </div>
                   <div className="text-right">
                     <p className="font-mono text-[10.5px] uppercase tracking-[0.08em] text-faint">
-                      BM25 peak
+                      composite peak
                     </p>
                     <p className="mt-0.5 font-mono text-[14px] tabular-nums text-healthy-fg/90">
-                      {metrics.peak_bm25.toFixed(2)}
+                      {metrics.peak_composite_score.toFixed(2)}
                     </p>
                   </div>
                 </div>
 
                 <div className="relative h-[8px] overflow-hidden rounded-full border border-tint/[0.05] bg-tint/[0.035]">
                   <div
-                    className="absolute inset-y-0 left-0 rounded-full bg-gradient-to-r from-accent/55 via-accent/70 to-cached/80 shadow-[0_0_12px_rgba(99,102,241,0.16)] transition-all duration-700"
+                    className="absolute inset-y-0 left-0 rounded-full bg-gradient-to-r from-accent/55 via-accent/70 to-cached/80 shadow-[0_0_12px_rgba(16,185,129,0.16)] transition-all duration-700"
                     style={{
                       width: `${Math.max(
                         3,
@@ -640,28 +739,15 @@ export default function InspectorPane({
                   <span>top {metrics.sources.length} / llm context</span>
                 </div>
 
-                <div className="mt-2 grid grid-cols-2 gap-1.5">
-                  <div className="rounded-[6px] border border-tint/[0.055] bg-tint/[0.015] px-2 py-1.5">
-                    <p className="font-mono text-[10.5px] uppercase tracking-[0.07em] text-faint">
-                      Deduped chunks
-                    </p>
-                    <p className="mt-0.5 font-mono text-[12.5px] tabular-nums text-ink">
-                      {metrics.sources.length}{" "}
-                      <span className="text-[10.5px] text-faint">selected</span>
-                    </p>
-                  </div>
-                  <div className="rounded-[6px] border border-tint/[0.055] bg-tint/[0.015] px-2 py-1.5">
-                    <p className="font-mono text-[10.5px] uppercase tracking-[0.07em] text-faint">
-                      Context budget
-                    </p>
-                    <p className="mt-0.5 font-mono text-[12.5px] tabular-nums text-ink">
-                      {metrics.sieved_tokens.toLocaleString()}{" "}
-                      <span className="text-[10.5px] text-faint">tok</span>
-                    </p>
-                  </div>
+                <div className="mt-2.5 rounded-[7px] border border-tint/[0.05] bg-tint/[0.015] px-2 py-1.5">
+                  <p className="font-mono text-[10px] leading-relaxed text-faint">
+                    <span className="text-accent-fg">0.60</span>·bm25{" "}
+                    <span className="text-cached-fg">0.25</span>·authority{" "}
+                    <span className="text-healing-fg">0.15</span>·freshness
+                  </p>
                 </div>
 
-                <div className="mt-2.5 space-y-1.5">
+                <div className="mt-2 space-y-1.5">
                   {metrics.sources.length === 0 ? (
                     <p className="rounded-[7px] border border-dashed border-tint/[0.07] px-2.5 py-2 text-[11.5px] leading-relaxed text-faint">
                       No usable chunks survived the sieve. The DAG emitted a self-healing branch
@@ -676,7 +762,9 @@ export default function InspectorPane({
                         4,
                         Math.min(
                           100,
-                          (source.bm25_score / Math.max(metrics.peak_bm25, 0.01)) * 100,
+                          (source.composite_score /
+                            Math.max(metrics.peak_composite_score, 0.01)) *
+                            100,
                         ),
                       );
                       return (
@@ -707,11 +795,27 @@ export default function InspectorPane({
                               </span>
                               <span className="mt-0.5 flex items-center gap-1.5">
                                 <span className="truncate font-mono text-[10.5px] uppercase tracking-[0.06em] text-faint">
-                                  {hostname(source.url)}
+                                  {source.domain || hostname(source.url)}
                                 </span>
-                                <span className="shrink-0 font-mono text-[10px] tabular-nums text-cached/70">
-                                  {source.bm25_score.toFixed(2)}
-                                </span>
+                                {source.wave >= 2 ? (
+                                  <span className="shrink-0 rounded bg-cached/10 px-1 font-mono text-[9px] uppercase tracking-[0.08em] text-cached-fg">
+                                    w{source.wave}
+                                  </span>
+                                ) : null}
+                              </span>
+                            </span>
+                            <span className="flex shrink-0 flex-col items-end gap-0.5">
+                              <span
+                                className={clsx(
+                                  "rounded border px-1 py-[1px] font-mono text-[9.5px] tabular-nums",
+                                  authorityTone(source.authority_score),
+                                )}
+                                title={`Domain authority ${source.authority_score.toFixed(2)}`}
+                              >
+                                auth {source.authority_score.toFixed(2)}
+                              </span>
+                              <span className="font-mono text-[10px] tabular-nums text-faint">
+                                {source.composite_score.toFixed(2)}
                               </span>
                             </span>
                             <ChevronDown
@@ -732,18 +836,19 @@ export default function InspectorPane({
                           </div>
                           {expanded ? (
                             <div className="animate-fade-in border-t border-tint/[0.05] px-2 pb-2 pt-2">
-                              <p className="max-h-28 overflow-y-auto whitespace-pre-wrap text-[12px] leading-[1.55] text-muted/85 scrollbar-subtle">
+                              <p className="scrollbar-subtle max-h-28 overflow-y-auto whitespace-pre-wrap text-[12px] leading-[1.55] text-muted/85">
                                 {source.text}
                               </p>
-                              <div className="mt-1.5 flex items-center justify-between">
+                              <div className="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-1">
                                 <span className="font-mono text-[10px] uppercase tracking-[0.05em] text-faint">
-                                  {source.token_count} tok · node {source.node_id}
+                                  {source.token_count} tok · bm25 {source.bm25_score.toFixed(2)} ·
+                                  fresh {source.freshness_score.toFixed(2)} · node {source.node_id}
                                 </span>
                                 <a
                                   href={source.url}
                                   target="_blank"
                                   rel="noreferrer"
-                                  className="flex items-center gap-1 font-mono text-[10.5px] uppercase tracking-[0.05em] text-cached/65 transition-colors hover:text-cached"
+                                  className="ml-auto flex items-center gap-1 font-mono text-[10.5px] uppercase tracking-[0.05em] text-cached/65 transition-colors hover:text-cached"
                                 >
                                   open source
                                   <ExternalLink size={7.5} />
@@ -765,15 +870,15 @@ export default function InspectorPane({
                   <div className="h-1 w-8 rounded-full bg-cached/30" />
                 </div>
                 <p className="mt-2 text-[12px] leading-relaxed text-faint">
-                  Raw page text will be de-tagged, chunked at 120 words with 20-word overlap, and
-                  BM25-scored against each query branch.
+                  Raw page text will be de-tagged, chunked at 120 words, BM25-scored, then
+                  reranked by domain authority and freshness.
                 </p>
               </div>
             )}
           </SectionCard>
 
           <SectionCard
-            index="04"
+            index="05"
             title="Promise daemon"
             subtitle="differential watcher · urgency gate"
             icon={BellRing}
@@ -784,25 +889,42 @@ export default function InspectorPane({
               </span>
             }
           >
-            <button
-              type="button"
-              onClick={onSimulate}
-              disabled={isSimulating}
-              className="group relative mt-0.5 flex w-full items-center justify-center gap-2 overflow-hidden rounded-[8px] border border-healing/25 bg-gradient-to-b from-healing/[0.14] to-healing/[0.065] px-3 py-2 text-[12px] font-medium text-healing-fg shadow-[inset_0_1px_0_rgba(255,255,255,0.07),0_8px_22px_rgba(245,158,11,0.06)] transition-all hover:border-healing/40 hover:from-healing/[0.2] disabled:cursor-wait disabled:opacity-70"
-            >
-              <span className="pointer-events-none absolute inset-y-0 -left-1/3 w-1/3 -skew-x-12 bg-tint/[0.045] transition-transform duration-700 group-hover:translate-x-[420%]" />
-              {isSimulating ? (
-                <Loader2 size={12} className="animate-spin" />
-              ) : (
-                <Flame size={12} className="text-healing" />
-              )}
-              {isSimulating ? "Running semantic diff…" : "Simulate target webpage update"}
-              {!isSimulating ? (
-                <span className="ml-0.5 rounded border border-healing/20 bg-shade/15 px-1 font-mono text-[9.5px] uppercase tracking-[0.08em] text-healing-fg/65">
+            <div className="grid grid-cols-1 gap-1.5 sm:grid-cols-2">
+              <button
+                type="button"
+                onClick={onSimulate}
+                disabled={isSimulating}
+                className="group relative flex items-center justify-center gap-2 overflow-hidden rounded-[8px] border border-healing/25 bg-gradient-to-b from-healing/[0.14] to-healing/[0.065] px-3 py-2 text-[12px] font-medium text-healing-fg shadow-[inset_0_1px_0_rgba(255,255,255,0.07),0_8px_22px_rgba(245,158,11,0.06)] transition-all hover:border-healing/40 hover:from-healing/[0.2] disabled:cursor-wait disabled:opacity-70"
+              >
+                <span className="pointer-events-none absolute inset-y-0 -left-1/3 w-1/3 -skew-x-12 bg-tint/[0.045] transition-transform duration-700 group-hover:translate-x-[420%]" />
+                {isSimulating ? (
+                  <Loader2 size={12} className="animate-spin" />
+                ) : (
+                  <Flame size={12} className="text-healing" />
+                )}
+                <span className="truncate">
+                  {isSimulating ? "Running semantic diff…" : "Simulate web update"}
+                </span>
+                <span className="shrink-0 rounded border border-healing/20 bg-shade/15 px-1 font-mono text-[9.5px] uppercase tracking-[0.08em] text-healing-fg/65">
                   demo
                 </span>
-              ) : null}
-            </button>
+              </button>
+
+              <button
+                type="button"
+                onClick={onSimulateCompleted}
+                disabled={isSimulating}
+                className="group flex items-center justify-center gap-2 rounded-[8px] border border-cached/25 bg-gradient-to-b from-cached/[0.13] to-cached/[0.06] px-3 py-2 text-[12px] font-medium text-cached-fg shadow-[inset_0_1px_0_rgba(255,255,255,0.07),0_8px_22px_rgba(45,212,191,0.05)] transition-all hover:border-cached/40 hover:from-cached/[0.19] disabled:cursor-wait disabled:opacity-70"
+                title="Simulate a page update where you already fulfilled the promise — Chronos should stay silent"
+              >
+                {isSimulating ? (
+                  <Loader2 size={12} className="animate-spin" />
+                ) : (
+                  <ShieldCheck size={12} className="text-cached" />
+                )}
+                <span className="truncate">You already did it</span>
+              </button>
+            </div>
 
             <div className="mt-2.5 rounded-[7px] border border-tint/[0.05] bg-shade/15 px-2.5 py-2">
               <div className="flex items-center gap-1.5">
@@ -837,13 +959,17 @@ export default function InspectorPane({
               <div
                 className={clsx(
                   "mt-2 animate-fade-up rounded-[8px] border px-2.5 py-2",
-                  simulation.gated
-                    ? "border-healing/20 bg-healing/[0.055]"
-                    : "border-healthy/20 bg-healthy/[0.05]",
+                  simulation.autoVerified
+                    ? "border-cached/25 bg-cached/[0.06]"
+                    : simulation.gated
+                      ? "border-healing/20 bg-healing/[0.055]"
+                      : "border-healthy/20 bg-healthy/[0.05]",
                 )}
               >
                 <div className="flex items-center gap-1.5">
-                  {simulation.gated ? (
+                  {simulation.autoVerified ? (
+                    <ShieldCheck size={9} className="text-cached" />
+                  ) : simulation.gated ? (
                     <Lock size={9} className="text-healing" />
                   ) : (
                     <BellRing size={9} className="text-healthy" />
@@ -851,17 +977,30 @@ export default function InspectorPane({
                   <span
                     className={clsx(
                       "font-mono text-[10px] uppercase tracking-[0.1em]",
-                      simulation.gated ? "text-healing-fg/90" : "text-healthy-fg/90",
+                      simulation.autoVerified
+                        ? "text-cached-fg/90"
+                        : simulation.gated
+                          ? "text-healing-fg/90"
+                          : "text-healthy-fg/90",
                     )}
                   >
-                    {simulation.gated ? "QUEUED_QUIET · suppressed" : "NUDGE RELEASED"}
+                    {simulation.autoVerified
+                      ? "AUTO_VERIFIED · stayed silent"
+                      : simulation.gated
+                        ? "QUEUED_QUIET · suppressed"
+                        : "NUDGE RELEASED"}
                   </span>
                   <span className="ml-auto font-mono text-[10px] tabular-nums text-faint">
                     urgency {simulation.urgency.toFixed(2)}
                   </span>
                 </div>
                 <p className="mt-1 text-[11px] leading-[1.5] text-muted">{simulation.message}</p>
-                {simulation.gated ? (
+                {simulation.verificationNote ? (
+                  <p className="mt-1 font-mono text-[10px] leading-relaxed text-cached/70">
+                    {simulation.verificationNote}
+                  </p>
+                ) : null}
+                {simulation.gated && !simulation.autoVerified ? (
                   <p className="mt-1.5 flex items-center gap-1 font-mono text-[10px] uppercase tracking-[0.04em] text-healing/80">
                     <Activity size={7} />
                     switch to Idle (1) in the top bar to flush
@@ -872,83 +1011,135 @@ export default function InspectorPane({
 
             <div className="mt-3 border-t border-tint/[0.055] pt-2.5">
               <div className="mb-1.5 flex items-center justify-between">
-                <span className="font-mono text-[10px] uppercase tracking-[0.11em] text-faint">caught promises</span>
-                <span className="font-mono text-[10px] uppercase tracking-[0.06em] text-faint/80">{activeCount} monitored</span>
+                <span className="font-mono text-[10px] uppercase tracking-[0.11em] text-faint">
+                  caught promises
+                </span>
+                <span className="font-mono text-[10px] uppercase tracking-[0.06em] text-faint/80">
+                  {activeCount} monitored
+                </span>
               </div>
-            {activePromises.length === 0 ? (
-              <div className="rounded-[8px] border border-dashed border-tint/[0.07] px-3 py-3">
-                <p className="text-[12px] leading-relaxed text-faint">
-                  No promises caught yet. Include a commitment in a query, or run the simulator
-                  to create the seeded Rahul demo promise.
-                </p>
-              </div>
-            ) : (
-              <div className="space-y-1.5">
-                {activePromises.map((promise) => {
-                  const meta = PROMISE_META[promise.status];
-                  const urgency = (promise.priority * promise.time_sensitivity) / focusLevel;
-                  return (
-                    <div
-                      key={promise.id}
-                      className="rounded-[8px] border border-tint/[0.06] bg-tint/[0.015] px-2.5 py-2"
-                    >
-                      <div className="flex items-center gap-1.5">
-                        <span className="truncate font-mono text-[11px] text-ink">
-                          {promise.id}
-                        </span>
-                        <span
-                          className={clsx(
-                            "ml-auto inline-flex items-center gap-1 rounded-full border px-1.5 py-[1px] font-mono text-[10px] uppercase tracking-[0.05em]",
-                            meta.text,
-                            meta.bg,
-                            meta.border,
-                          )}
-                        >
-                          <span className={clsx("h-1 w-1 rounded-full", meta.dot)} />
-                          {meta.label}
-                        </span>
-                      </div>
-                      <p className="mt-1.5 line-clamp-2 text-[12px] leading-[1.45] text-ink">
-                        To <span className="text-ink-strong">{promise.recipient}</span> ·{" "}
-                        {promise.promised_action}
-                      </p>
-                      <p className="mt-1 line-clamp-1 text-[11px] text-faint" title={promise.trigger_condition}>
-                        ⤷ {promise.trigger_condition}
-                      </p>
-                      <div className="mt-1.5 flex items-center gap-1.5">
-                        <span className="truncate font-mono text-[10.5px] uppercase tracking-[0.04em] text-muted">
-                          {hostname(promise.watch_url)}
-                        </span>
-                        <span className="ml-auto shrink-0 rounded bg-tint/[0.035] px-1 py-[1px] font-mono text-[10px] tabular-nums text-faint">
-                          {shortHash(promise.last_dom_hash)}
-                        </span>
-                      </div>
-                      <div className="mt-1.5 flex items-center gap-1.5 border-t border-tint/[0.045] pt-1.5 font-mono text-[11px] tabular-nums text-faint">
-                        <span>P{promise.priority}</span>
-                        <span className="text-tint/15">×</span>
-                        <span>T{promise.time_sensitivity}</span>
-                        <span className="text-tint/15">÷</span>
-                        <span>F{focusLevel}</span>
-                        <span className="text-tint/15">=</span>
-                        <span
-                          className={clsx(
-                            urgency >= 2.5 ? "text-healthy-fg/85" : "text-healing/85",
-                          )}
-                        >
-                          {urgency.toFixed(2)}
-                        </span>
-                        {promise.draft_artifact ? (
-                          <span className="ml-auto flex items-center gap-1 text-cached/65">
-                            <Sparkles size={7} />
-                            artifact staged
+              {activePromises.length === 0 ? (
+                <div className="rounded-[8px] border border-dashed border-tint/[0.07] px-3 py-3">
+                  <p className="text-[12px] leading-relaxed text-faint">
+                    No promises caught yet. Include a commitment in a query, or run the simulator
+                    to create the seeded Rahul demo promise.
+                  </p>
+                </div>
+              ) : (
+                <div className="space-y-1.5">
+                  {activePromises.map((promise) => {
+                    const meta = PROMISE_META[promise.status];
+                    const urgency = (promise.priority * promise.time_sensitivity) / focusLevel;
+                    return (
+                      <div
+                        key={promise.id}
+                        className={clsx(
+                          "rounded-[8px] border bg-tint/[0.015] px-2.5 py-2",
+                          promise.status === "AUTO_VERIFIED_SILENT"
+                            ? "border-cached/20 bg-cached/[0.03]"
+                            : "border-tint/[0.06]",
+                        )}
+                      >
+                        <div className="flex items-center gap-1.5">
+                          <span className="truncate font-mono text-[11px] text-ink">
+                            {promise.id}
                           </span>
+                          <span
+                            className={clsx(
+                              "ml-auto inline-flex items-center gap-1 rounded-full border px-1.5 py-[1px] font-mono text-[10px] uppercase tracking-[0.05em]",
+                              meta.text,
+                              meta.bg,
+                              meta.border,
+                            )}
+                          >
+                            <span className={clsx("h-1 w-1 rounded-full", meta.dot)} />
+                            {meta.label}
+                          </span>
+                        </div>
+                        <p className="mt-1.5 line-clamp-2 text-[12px] leading-[1.45] text-ink">
+                          To <span className="text-ink-strong">{promise.recipient}</span> ·{" "}
+                          {promise.promised_action}
+                        </p>
+                        <p
+                          className="mt-1 line-clamp-1 text-[11px] text-faint"
+                          title={promise.trigger_condition}
+                        >
+                          ⤷ {promise.trigger_condition}
+                        </p>
+                        {promise.verification_note ? (
+                          <p className="mt-1.5 rounded-[6px] border border-cached/15 bg-cached/[0.05] px-2 py-1 font-mono text-[10px] leading-relaxed text-cached-fg/80">
+                            {promise.verification_note}
+                          </p>
                         ) : null}
+                        <div className="mt-1.5 flex items-center gap-1.5">
+                          <span className="truncate font-mono text-[10.5px] uppercase tracking-[0.04em] text-muted">
+                            {hostname(promise.watch_url)}
+                          </span>
+                          <span className="ml-auto shrink-0 rounded bg-tint/[0.035] px-1 py-[1px] font-mono text-[10px] tabular-nums text-faint">
+                            {shortHash(promise.last_dom_hash)}
+                          </span>
+                        </div>
+                        <div className="mt-1.5 flex items-center gap-1.5 border-t border-tint/[0.045] pt-1.5 font-mono text-[11px] tabular-nums text-faint">
+                          <span>P{promise.priority}</span>
+                          <span className="text-tint/15">×</span>
+                          <span>T{promise.time_sensitivity}</span>
+                          <span className="text-tint/15">÷</span>
+                          <span>F{focusLevel}</span>
+                          <span className="text-tint/15">=</span>
+                          <span
+                            className={clsx(
+                              urgency >= 2.5 ? "text-healthy-fg/85" : "text-healing/85",
+                            )}
+                          >
+                            {urgency.toFixed(2)}
+                          </span>
+                          {promise.draft_artifact ? (
+                            <span className="ml-auto flex items-center gap-1 text-cached/65">
+                              <Sparkles size={7} />
+                              artifact staged
+                            </span>
+                          ) : null}
+                        </div>
                       </div>
-                    </div>
-                  );
-                })}
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+
+            <div className="mt-3 border-t border-tint/[0.055] pt-2.5">
+              <div className="mb-1.5 flex items-center gap-1.5">
+                <History size={9} className="text-faint" />
+                <span className="font-mono text-[10px] uppercase tracking-[0.11em] text-faint">
+                  outbound activity log
+                </span>
+                <span className="ml-auto font-mono text-[10px] uppercase tracking-[0.06em] text-faint/80">
+                  {activityLog.length} signal{activityLog.length === 1 ? "" : "s"}
+                </span>
               </div>
-            )}
+              {activityLog.length === 0 ? (
+                <p className="rounded-[7px] border border-dashed border-tint/[0.07] px-2.5 py-2 text-[11px] leading-relaxed text-faint">
+                  Nothing outbound yet. When you resolve a promise or the simulator records that
+                  you already did it, the evidence lands here — and Chronos stays quiet.
+                </p>
+              ) : (
+                <div className="space-y-1">
+                  {activityLog.slice(0, 6).map((entry) => (
+                    <div
+                      key={entry.id}
+                      className="flex items-start gap-2 rounded-[6px] border border-tint/[0.05] bg-tint/[0.012] px-2 py-1.5"
+                    >
+                      <span className="mt-[3px] h-1 w-1 shrink-0 rounded-full bg-cached/70" />
+                      <span className="min-w-0 flex-1 text-[11px] leading-relaxed text-muted">
+                        {entry.summary}
+                      </span>
+                      <span className="shrink-0 font-mono text-[9.5px] uppercase tracking-[0.06em] text-faint">
+                        {entry.kind}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
           </SectionCard>
 

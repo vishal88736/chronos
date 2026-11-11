@@ -36,12 +36,25 @@ Return only JSON: {"query": "rewritten query"}."""
 _COMMUNITY_SUFFIX = "GitHub developer discussion workaround"
 _OFFICIAL_SUFFIX = "official release notes status"
 _BENCH_SUFFIX = "tail latency benchmark results"
+_FOLLOWUP_SUFFIX = "changelog fix details"
 
 _STOPWORDS = {
     "a", "an", "the", "of", "for", "to", "in", "on", "at", "and", "or", "is", "are",
     "was", "were", "be", "been", "with", "from", "by", "as", "it", "this", "that",
     "these", "those", "our", "my", "your", "we", "i", "me", "please", "could", "would",
     "can", "if", "whether", "check", "find", "search", "look", "up", "tell",
+}
+
+# Version-looking tokens such as "15.4", "v3.2.1" or "2024.1".
+_VERSION_TOKEN = re.compile(r"\bv?\d+\.\d+(?:\.\d+)?\b", re.IGNORECASE)
+# Words that are never interesting as a search subject on their own.
+_TOPIC_NOISE = {
+    "issue", "issues", "pull", "request", "pr", "readme", "docs", "documentation",
+    "release", "releases", "notes", "changelog", "status", "official", "developer",
+    "developers", "discussion", "workaround", "github", "gitlab", "stack", "overflow",
+    "version", "versions", "latest", "current", "update", "updates", "question",
+    "questions", "answer", "answers", "blog", "post", "guide", "tutorial", "how",
+    "what", "why", "when", "where", "which", "does", "can", "you", "your", "app",
 }
 
 _VOLATILE_PATTERN = re.compile(
@@ -222,7 +235,84 @@ class DAGPlanner:
             depends_on=[node.id],
             volatility=node.volatility,
             retry_of=node.id,
+            wave=node.wave,
         )
+
+    # ── Wave 2: dependent follow-up queries ──────────────────────────────────
+
+    async def build_followup(
+        self,
+        raw_query: str,
+        wave_one: list[DAGNode],
+        wave_one_chunks: list[dict[str, Any]],
+        ambient_terms: list[str] | None = None,
+    ) -> DAGNode | None:
+        """Build a wave-2 node that interpolates the wave-1 findings.
+
+        Wave 1 resolves the unknown parts of the question in parallel. Wave 2
+        takes what wave 1 actually found — a version number, a product name,
+        the authoritative domain — and asks a sharper follow-up that could not
+        have been written before wave 1 ran.
+        """
+        if not wave_one:
+            return None
+
+        version = self._dominant_version(wave_one_chunks)
+        subject = self._subject_terms(raw_query)
+        if not subject:
+            return None
+
+        detail = version or (wave_one_chunks[0].get("domain", "") if wave_one_chunks else "")
+        parts = subject[:4]
+        if version:
+            parts.append(version)
+        if ambient_terms:
+            parts.extend(term for term in ambient_terms[:2] if term.lower() not in " ".join(parts).lower())
+        query = " ".join(parts)[:520]
+        query = f"{query} {_FOLLOWUP_SUFFIX}".strip()[:600]
+        if len(query) < 8:
+            return None
+
+        volatility = Volatility.VOLATILE if version else Volatility.STATIC
+        depends = [node.id for node in wave_one][:3]
+        return DAGNode(
+            id="q_wave2",
+            query=query,
+            depends_on=depends,
+            volatility=volatility,
+            wave=2,
+        )
+
+    @staticmethod
+    def _dominant_version(chunks: list[dict[str, Any]]) -> str:
+        """The version string that appears most often across the evidence."""
+        counts: dict[str, int] = {}
+        for chunk in chunks[:12]:
+            text = str(chunk.get("text", ""))[:1200]
+            for match in _VERSION_TOKEN.findall(text):
+                token = match.strip().lstrip("vV")
+                if len(token) < 3 or token.startswith("0"):
+                    continue
+                counts[token] = counts.get(token, 0) + 1
+        if not counts:
+            return ""
+        return max(counts.items(), key=lambda item: (item[1], -len(item[0])))[0]
+
+    @staticmethod
+    def _subject_terms(raw_query: str) -> list[str]:
+        """The nouns that describe what the question is actually about."""
+        core = clean_for_search(raw_query) or raw_query
+        words = re.findall(r"[A-Za-z][A-Za-z0-9.+#-]{2,}", core)
+        kept: list[str] = []
+        for word in words:
+            lowered = word.lower()
+            if lowered in _STOPWORDS or lowered in _TOPIC_NOISE:
+                continue
+            if len(lowered) <= 2:
+                continue
+            if lowered not in [item.lower() for item in kept]:
+                kept.append(word)
+        return kept[:6]
 
     @staticmethod
     def _heuristic_rewrite(query: str) -> str:

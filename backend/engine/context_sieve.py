@@ -30,6 +30,72 @@ MAX_CHUNKS_PER_NODE = 240
 MAX_CHUNKS_PER_URL = 2
 MAX_CHUNKS_PER_DOMAIN = 3
 
+# Composite reranking weights.
+#   Composite = 0.60 * normalised BM25
+#            + 0.25 * domain authority
+#            + 0.15 * freshness
+# BM25 alone treats an SEO farm the same as the vendor's own documentation,
+# which is exactly the failure mode the glass-box inspector should expose.
+WEIGHT_BM25 = 0.60
+WEIGHT_AUTHORITY = 0.25
+WEIGHT_FRESHNESS = 0.15
+# The composite score tops out near 1.0 (0.60 + 0.25*0.95 + 0.15*1.0), so a
+# weak-evidence line has to live on that scale rather than the old BM25 one.
+COMPOSITE_HEAL_THRESHOLD = 0.55
+
+# Primary engineering sources are worth far more than the open web.
+TIER_PRIMARY = (
+    "github.com",
+    "developer.apple.com",
+    "apple.com",
+    "python.org",
+    "docs.python.org",
+    "fastapi.tiangolo.com",
+    "mozilla.org",
+    "developer.mozilla.org",
+    "developer.chrome.com",
+    "webkit.org",
+    "docs.rs",
+    "pkg.go.dev",
+    "kubernetes.io",
+    "react.dev",
+    "nextjs.org",
+    "typescriptlang.org",
+    "rust-lang.org",
+    "go.dev",
+    "crates.io",
+    "npmjs.com",
+    "pypi.org",
+)
+TIER_INSTITUTIONAL = (".edu", ".gov", ".org", ".dev", ".io", "wikipedia.org")
+TIER_AGGREGATOR = (
+    "medium.com",
+    "dev.to",
+    "substack.com",
+    "blogspot.com",
+    "reddit.com",
+    "quora.com",
+    "news.ycombinator.com",
+    "stackexchange.com",
+    "stackoverflow.com",
+)
+
+# Signals that a passage is describing a *recent* state of the world.
+_FRESH_TOKENS = re.compile(
+    r"\b(20\d{2}|latest|current|currently|now|today|recent|recently|new|newly|"
+    r"just\s+released|beta|rc\d|candidate|update[sd]?|patched|fixed|shipped|"
+    r"released|deprecated|still|remains|as\s+of)\b",
+    re.IGNORECASE,
+)
+_STALE_TOKENS = re.compile(
+    r"\b(archived|deprecated|obsolete|end[- ]of[- ]life|eol|no\s+longer|"
+    r"discontinued|legacy|outdated|201[0-9])\b",
+    re.IGNORECASE,
+)
+# A passage that states a concrete version keeps its freshness score even
+# without a date, because "fixed in 15.4" is a current-state claim.
+_VERSION_TOKEN = re.compile(r"\bv?\d+\.\d+(?:\.\d+)?\b")
+
 
 def _domain_of(url: str) -> str:
     """Bare hostname for a URL, lowercased and without a leading `www.`."""
@@ -40,6 +106,38 @@ def _domain_of(url: str) -> str:
         return ""
     host = match.group(1).lower()
     return host[4:] if host.startswith("www.") else host
+
+
+def authority_score(url: str) -> float:
+    """Authority of a source domain in [0, 1]."""
+    host = _domain_of(url)
+    if not host:
+        return 0.40
+    if any(host == tier or host.endswith(f".{tier}") for tier in TIER_PRIMARY):
+        return 0.95
+    if any(host == tier or host.endswith(tier) for tier in TIER_INSTITUTIONAL):
+        return 0.75
+    if any(host == tier or host.endswith(f".{tier}") for tier in TIER_AGGREGATOR):
+        return 0.35
+    return 0.50
+
+
+def freshness_score(text: str, age_seconds: int = 0) -> float:
+    """How current a passage reads, in [0, 1]."""
+    score = 0.55
+    if _FRESH_TOKENS.search(text or ""):
+        score += 0.25
+    if _VERSION_TOKEN.search(text or ""):
+        score += 0.10
+    if _STALE_TOKENS.search(text or ""):
+        score -= 0.35
+    # Freshly retrieved evidence is more likely to describe the present.
+    if age_seconds > 0:
+        if age_seconds < 3600:
+            score += 0.10
+        elif age_seconds > 30 * 86_400:
+            score -= 0.15
+    return round(max(0.0, min(1.0, score)), 4)
 
 
 def tokenize(text: str) -> list[str]:
@@ -79,6 +177,7 @@ class NodeSieveResult:
     total_words: int = 0
     chunk_count: int = 0
     peak_bm25: float = 0.0
+    peak_composite: float = 0.0
     needs_healing: bool = False
     healing_reason: str | None = None
     chunks: list[dict[str, Any]] = field(default_factory=list)
@@ -93,6 +192,7 @@ class ContextSieve:
         node_id: str,
         query: str,
         raw_documents: list[dict[str, Any]],
+        wave: int = 1,
     ) -> NodeSieveResult:
         result = NodeSieveResult(node_id=node_id, query=query)
         if not raw_documents:
@@ -125,6 +225,7 @@ class ContextSieve:
                         "text": chunk,
                         "chunk_index": chunk_index,
                         "token_count": estimate_tokens(chunk),
+                        "wave": wave,
                     }
                 )
                 result.candidate_tokens += estimate_tokens(chunk)
@@ -169,6 +270,31 @@ class ContextSieve:
             scored.append({**candidate, "bm25_score": round(score, 4)})
         scored.sort(key=lambda chunk: float(chunk["bm25_score"]), reverse=True)
         result.peak_bm25 = round(float(scored[0]["bm25_score"]), 4) if scored else 0.0
+
+        # Per-chunk authority and freshness, plus a per-node composite score
+        # used for the healing decision. The global ranking in `assemble`
+        # recomputes the composite against the cross-node BM25 maximum.
+        peak = result.peak_bm25 or 0.0
+        for chunk in scored:
+            domain = _domain_of(str(chunk.get("url", "")))
+            authority = authority_score(str(chunk.get("url", "")))
+            fresh = freshness_score(str(chunk.get("text", "")))
+            chunk["domain"] = domain
+            chunk["authority_score"] = authority
+            chunk["freshness_score"] = fresh
+            normalised = (float(chunk["bm25_score"]) / peak) if peak > 0 else 0.0
+            chunk["composite_score"] = round(
+                WEIGHT_BM25 * normalised + WEIGHT_AUTHORITY * authority + WEIGHT_FRESHNESS * fresh,
+                4,
+            )
+        result.peak_composite = round(
+            max((float(chunk["composite_score"]) for chunk in scored), default=0.0), 4
+        )
+        if result.peak_composite < COMPOSITE_HEAL_THRESHOLD and not result.needs_healing:
+            result.needs_healing = True
+            result.healing_reason = (
+                f"peak composite {result.peak_composite:.2f} < threshold {COMPOSITE_HEAL_THRESHOLD:.2f}"
+            )
         if result.peak_bm25 < self.threshold and not result.needs_healing:
             result.needs_healing = True
             result.healing_reason = (
@@ -197,6 +323,26 @@ class ContextSieve:
                 seen_text.add(fingerprint)
                 all_chunks.append(chunk)
         all_chunks.sort(key=lambda chunk: float(chunk.get("bm25_score", 0.0)), reverse=True)
+
+        # Normalise BM25 across the whole corpus, then fold in domain
+        # authority and freshness. This is the ranking the inspector reports
+        # and the ranking the answer is grounded in.
+        peak_bm25 = max((float(chunk.get("bm25_score", 0.0)) for chunk in all_chunks), default=0.0)
+        for chunk in all_chunks:
+            url = str(chunk.get("url", "") or "")
+            chunk.setdefault("domain", _domain_of(url))
+            chunk.setdefault("authority_score", authority_score(url))
+            chunk.setdefault("freshness_score", freshness_score(str(chunk.get("text", ""))))
+            normalised = (
+                float(chunk.get("bm25_score", 0.0)) / peak_bm25 if peak_bm25 > 0 else 0.0
+            )
+            chunk["composite_score"] = round(
+                WEIGHT_BM25 * normalised
+                + WEIGHT_AUTHORITY * float(chunk.get("authority_score", 0.0))
+                + WEIGHT_FRESHNESS * float(chunk.get("freshness_score", 0.0)),
+                4,
+            )
+        all_chunks.sort(key=lambda chunk: float(chunk.get("composite_score", 0.0)), reverse=True)
 
         # Prefer diverse evidence over near-duplicate overlapping chunks. This
         # prevents one verbose source from consuming the entire 8-chunk budget.
@@ -252,6 +398,11 @@ class ContextSieve:
                     text=str(chunk["text"]),
                     bm25_score=round(float(chunk.get("bm25_score", 0.0)), 4),
                     token_count=int(chunk.get("token_count", estimate_tokens(str(chunk["text"])))),
+                    domain=str(chunk.get("domain", "")),
+                    authority_score=round(float(chunk.get("authority_score", 0.0)), 4),
+                    freshness_score=round(float(chunk.get("freshness_score", 0.0)), 4),
+                    composite_score=round(float(chunk.get("composite_score", 0.0)), 4),
+                    wave=int(chunk.get("wave", 1) or 1),
                 )
             )
         sieved_tokens = sum(source.token_count for source in sources)
@@ -260,6 +411,9 @@ class ContextSieve:
         if raw_tokens > 0:
             compression = max(0.0, min(100.0, round((1 - sieved_tokens / raw_tokens) * 100, 1)))
         peak = round(max((result.peak_bm25 for result in results), default=0.0), 4)
+        peak_composite = round(
+            max((float(source.composite_score) for source in sources), default=0.0), 4
+        )
         metrics = SieveMetrics(
             raw_tokens=raw_tokens,
             sieved_tokens=sieved_tokens,
@@ -269,12 +423,14 @@ class ContextSieve:
             selected_chunks=len(sources),
             total_scraped_words=total_words,
             sources=sources,
+            peak_composite_score=peak_composite,
         )
         logger.info(
-            "sieve: raw=%d sieved=%d compression=%.1f%% peak_bm25=%.2f",
+            "sieve: raw=%d sieved=%d compression=%.1f%% peak_bm25=%.2f peak_composite=%.2f",
             raw_tokens,
             sieved_tokens,
             compression,
             peak,
+            peak_composite,
         )
         return metrics

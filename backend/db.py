@@ -17,6 +17,7 @@ import logging
 import os
 import re
 import time
+import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any, AsyncIterator, Iterable
@@ -61,15 +62,32 @@ CREATE TABLE IF NOT EXISTS caught_promises (
     last_dom_hash TEXT NOT NULL,
     priority INTEGER NOT NULL, -- 1 to 5
     time_sensitivity INTEGER NOT NULL, -- 1 to 5
-    status TEXT NOT NULL, -- 'WATCHING', 'QUEUED_QUIET', 'NUDGED', 'RESOLVED'
+    status TEXT NOT NULL, -- 'WATCHING', 'QUEUED_QUIET', 'NUDGED', 'AUTO_VERIFIED_SILENT', 'RESOLVED'
     draft_artifact TEXT,
     trigger_summary TEXT,
+    created_at INTEGER NOT NULL,
+    verification_note TEXT,
+    urgency_score REAL NOT NULL DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS outbound_activity_log (
+    id TEXT PRIMARY KEY,
+    summary TEXT NOT NULL,
+    kind TEXT NOT NULL DEFAULT 'generic',
     created_at INTEGER NOT NULL
 );
 
 CREATE INDEX IF NOT EXISTS idx_promises_status ON caught_promises(status);
 CREATE INDEX IF NOT EXISTS idx_cache_created_at ON epistemic_cache(created_at);
+CREATE INDEX IF NOT EXISTS idx_activity_created_at ON outbound_activity_log(created_at);
 """
+
+# Columns added after the first release. Existing databases are migrated in
+# place on startup so a long-lived local install keeps its promises.
+MIGRATIONS: tuple[tuple[str, str, str], ...] = (
+    ("caught_promises", "verification_note", "TEXT"),
+    ("caught_promises", "urgency_score", "REAL NOT NULL DEFAULT 0"),
+)
 
 SEED_ENTITIES: tuple[tuple[str, str, str], ...] = (
     ("rahul", "Rahul Sharma (Lead Systems Engineer on ScreenKit-Mac repository)", "colleague"),
@@ -90,6 +108,8 @@ _PROMISE_UPDATE_COLUMNS = {
     "status",
     "draft_artifact",
     "trigger_summary",
+    "verification_note",
+    "urgency_score",
 }
 
 
@@ -115,6 +135,7 @@ async def init_db() -> None:
     async with connect() as db:
         await db.execute("PRAGMA journal_mode=WAL")
         await db.executescript(SCHEMA)
+        await _migrate(db)
         count_row = await (await db.execute("SELECT COUNT(*) AS n FROM memory_entities")).fetchone()
         if count_row is not None and int(count_row["n"]) == 0:
             now = int(time.time())
@@ -124,6 +145,19 @@ async def init_db() -> None:
             )
         await db.commit()
     await purge_expired_cache()
+
+
+async def _migrate(db: aiosqlite.Connection) -> None:
+    """Add columns that newer releases introduced to older databases."""
+    for table, column, definition in MIGRATIONS:
+        rows = await (await db.execute(f"PRAGMA table_info({table})")).fetchall()
+        if any(str(row["name"]) == column for row in rows):
+            continue
+        try:
+            await db.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+            logger.info("migrated %s.%s", table, column)
+        except Exception as exc:  # noqa: BLE001 - migration must never block startup
+            logger.warning("could not migrate %s.%s: %s", table, column, exc)
 
 
 def normalize_query(query: str) -> str:
@@ -308,6 +342,8 @@ def _promise_row(row: aiosqlite.Row) -> dict[str, Any]:
         "draft_artifact": row["draft_artifact"],
         "trigger_summary": row["trigger_summary"],
         "created_at": int(row["created_at"]),
+        "verification_note": row["verification_note"],
+        "urgency_score": round(float(row["urgency_score"] or 0.0), 2),
     }
 
 
@@ -316,8 +352,14 @@ async def create_promise(record: dict[str, Any]) -> dict[str, Any]:
         "id", "actor", "recipient", "promised_action", "trigger_condition",
         "watch_url", "last_dom_hash", "priority", "time_sensitivity", "status",
         "draft_artifact", "trigger_summary", "created_at",
+        "verification_note", "urgency_score",
     ]
     values = [record.get(column) for column in columns]
+    # urgency_score is NOT NULL; a record that predates the column simply has
+    # no computed urgency yet.
+    urgency_index = columns.index("urgency_score")
+    if values[urgency_index] is None:
+        values[urgency_index] = 0.0
     async with connect() as db:
         await db.execute(
             f"INSERT INTO caught_promises ({', '.join(columns)}) VALUES ({', '.join('?' for _ in columns)})",
@@ -419,7 +461,13 @@ async def promise_counts() -> dict[str, int]:
         rows = await (await db.execute(
             "SELECT status, COUNT(*) AS n FROM caught_promises GROUP BY status"
         )).fetchall()
-    counts = {"WATCHING": 0, "QUEUED_QUIET": 0, "NUDGED": 0, "RESOLVED": 0}
+    counts = {
+        "WATCHING": 0,
+        "QUEUED_QUIET": 0,
+        "NUDGED": 0,
+        "AUTO_VERIFIED_SILENT": 0,
+        "RESOLVED": 0,
+    }
     for row in rows:
         counts[str(row["status"])] = int(row["n"])
     counts["active"] = counts["WATCHING"] + counts["QUEUED_QUIET"] + counts["NUDGED"]
@@ -436,3 +484,89 @@ async def promises_due_for_watch() -> list[dict[str, Any]]:
             """
         )).fetchall()
     return [_promise_row(row) for row in rows]
+
+
+# ── Outbound activity log ─────────────────────────────────────────────────────
+#
+# The promise daemon reads this before it ever interrupts the user. If the
+# action the user promised to take already shows up here, the nudge is
+# suppressed and the promise is closed silently.
+
+
+def _activity_row(row: aiosqlite.Row) -> dict[str, Any]:
+    return {
+        "id": str(row["id"]),
+        "summary": str(row["summary"]),
+        "kind": str(row["kind"] or "generic"),
+        "created_at": int(row["created_at"]),
+    }
+
+
+async def log_outbound_activity(
+    summary: str, kind: str = "generic", created_at: int | None = None
+) -> dict[str, Any]:
+    clean = " ".join(str(summary).split())[:600]
+    if not clean:
+        raise ValueError("activity summary is required")
+    entry = {
+        "id": f"act_{uuid.uuid4().hex[:12]}",
+        "summary": clean,
+        "kind": " ".join(str(kind or "generic").split())[:40] or "generic",
+        "created_at": int(created_at if created_at is not None else time.time()),
+    }
+    async with connect() as db:
+        await db.execute(
+            """
+            INSERT INTO outbound_activity_log (id, summary, kind, created_at)
+            VALUES (?, ?, ?, ?)
+            """,
+            (entry["id"], entry["summary"], entry["kind"], entry["created_at"]),
+        )
+        await db.commit()
+    return entry
+
+
+async def list_outbound_activity(limit: int = 50) -> list[dict[str, Any]]:
+    async with connect() as db:
+        rows = await (await db.execute(
+            "SELECT * FROM outbound_activity_log ORDER BY created_at DESC LIMIT ?",
+            (max(1, min(int(limit), 500)),),
+        )).fetchall()
+    return [_activity_row(row) for row in rows]
+
+
+async def recent_outbound_activity(
+    recipient: str = "", promised_action: str = "", within_seconds: int = 86_400
+) -> list[dict[str, Any]]:
+    """Activity entries that could plausibly prove a promise was fulfilled.
+
+    The match is deliberately generous: a commit, a PR, a message or a file
+    edit that mentions the recipient or a distinctive fragment of the promised
+    action counts. The cost of a false negative (nagging a user who already
+    did the thing) is much higher than a false positive, because the gate
+    below still requires the promise to be genuinely actionable.
+    """
+    entries = await list_outbound_activity(limit=200)
+    cutoff = int(time.time()) - max(60, int(within_seconds))
+    recipient_tokens = {
+        token for token in re.findall(r"[a-z0-9]+", recipient.lower()) if len(token) > 2
+    }
+    action_tokens = {
+        token
+        for token in re.findall(r"[a-z0-9]+", promised_action.lower())
+        if len(token) > 3 and token not in {"send", "share", "update", "with", "that", "this", "will"}
+    }
+    matches: list[dict[str, Any]] = []
+    for entry in entries:
+        if entry["created_at"] < cutoff:
+            continue
+        haystack = entry["summary"].lower()
+        entry_tokens = set(re.findall(r"[a-z0-9]+", haystack))
+        if recipient_tokens and recipient_tokens & entry_tokens:
+            matches.append(entry)
+            continue
+        if action_tokens:
+            overlap = len(action_tokens & entry_tokens) / len(action_tokens)
+            if overlap >= 0.6:
+                matches.append(entry)
+    return matches

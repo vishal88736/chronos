@@ -1,12 +1,16 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { AlertTriangle, X } from "lucide-react";
+import { AlertTriangle, PanelRightClose, PanelRightOpen, X } from "lucide-react";
+import AutoVerifiedBanner from "@/components/AutoVerifiedBanner";
 import ChatPane from "@/components/ChatPane";
 import InspectorPane from "@/components/InspectorPane";
 import NudgePill from "@/components/NudgePill";
 import TopMenuBar, { type ConnectionState } from "@/components/TopMenuBar";
+import { streamChat, type StreamHandle } from "@/lib/stream";
 import type {
+  ActivityLogEntry,
+  AmbientContext,
   CaughtPromise,
   ChatMessage,
   ChronosEvent,
@@ -22,6 +26,7 @@ import type {
   SimulateMutationResponse,
   SimulationView,
   SpeculationView,
+  StageTimings,
   StateResponse,
 } from "@/types/chronos";
 
@@ -35,14 +40,14 @@ function normalizeFocus(value: number): FocusLevel {
   return value === 4 || value === 2 || value === 1 ? value : 5;
 }
 
-function urgencFor(promise: CaughtPromise, focus: number): number {
+function urgencyFor(promise: CaughtPromise, focus: number): number {
   return Math.round(((promise.priority * promise.time_sensitivity) / Math.max(1, focus)) * 100) / 100;
 }
 
 function nudgeFromPromise(promise: CaughtPromise, focus: number): NudgePayload {
   return {
     promise_id: promise.id,
-    urgency: urgencFor(promise, focus),
+    urgency: urgencyFor(promise, focus),
     focus_level: focus,
     trigger_summary: promise.trigger_summary || promise.trigger_condition,
     draft_artifact: promise.draft_artifact,
@@ -62,29 +67,20 @@ async function parseApiError(response: Response): Promise<string> {
   return `${response.status} ${response.statusText}`;
 }
 
-function parseSseBlock(block: string): ChronosEvent | null {
-  const dataLines = block
-    .split(/\r?\n/)
-    .filter((line) => line.startsWith("data:"))
-    .map((line) => line.slice(5).trimStart());
-  if (dataLines.length === 0) return null;
-  try {
-    return JSON.parse(dataLines.join("\n")) as ChronosEvent;
-  } catch {
-    return null;
-  }
-}
-
 export default function Page() {
   const [focusLevel, setFocusLevel] = useState<FocusLevel>(5);
   const [isChangingFocus, setIsChangingFocus] = useState(false);
   const [promises, setPromises] = useState<CaughtPromise[]>([]);
   const [allEntities, setAllEntities] = useState<MemoryEntity[]>([]);
+  const [activityLog, setActivityLog] = useState<ActivityLogEntry[]>([]);
   const [providers, setProviders] = useState<Record<string, boolean>>({});
   const [connection, setConnection] = useState<ConnectionState>("connecting");
 
+  const [activeApp, setActiveApp] = useState("");
+  const [ambient, setAmbient] = useState<AmbientContext | null>(null);
+  const [ambientSupported, setAmbientSupported] = useState(false);
+
   const [input, setInput] = useState("");
-  const inputRef = useRef("");
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [isStreaming, setIsStreaming] = useState(false);
   const isStreamingRef = useRef(false);
@@ -94,6 +90,7 @@ export default function Page() {
   const [nodes, setNodes] = useState<DAGNodeView[]>([]);
   const [planner, setPlanner] = useState<PlannerMeta | null>(null);
   const [metrics, setMetrics] = useState<SieveMetricsEvent | null>(null);
+  const [timings, setTimings] = useState<StageTimings | null>(null);
   const [contradictions, setContradictions] = useState<Contradiction[]>([]);
   const [highlightedSourceId, setHighlightedSourceId] = useState<string | null>(null);
 
@@ -102,17 +99,23 @@ export default function Page() {
   const [simulation, setSimulation] = useState<SimulationView | null>(null);
   const [isSimulating, setIsSimulating] = useState(false);
   const [errorBanner, setErrorBanner] = useState<string | null>(null);
+  const [autoVerified, setAutoVerified] = useState<{
+    note: string;
+    recipient: string;
+  } | null>(null);
+  const [isExportingTrace, setIsExportingTrace] = useState(false);
+  const [showInspector, setShowInspector] = useState(false);
 
-  const abortRef = useRef<AbortController | null>(null);
+  const streamRef = useRef<StreamHandle | null>(null);
   const activeAssistantIdRef = useRef<string | null>(null);
   const speculateDebounceRef = useRef<number | null>(null);
   const speculatePollRef = useRef<number | null>(null);
   const speculateAbortRef = useRef<AbortController | null>(null);
   const speculateSequenceRef = useRef(0);
-
-  useEffect(() => {
-    inputRef.current = input;
-  }, [input]);
+  // Tokens are buffered and flushed once per frame: streaming a long answer
+  // token-by-token otherwise re-renders the whole transcript on every delta.
+  const tokenBufferRef = useRef<string>("");
+  const tokenFrameRef = useRef<number | null>(null);
 
   useEffect(() => {
     isStreamingRef.current = isStreaming;
@@ -150,10 +153,13 @@ export default function Page() {
       if (!response.ok) throw new Error(await parseApiError(response));
       const data = (await response.json()) as StateResponse;
       setFocusLevel(normalizeFocus(data.focus_level));
-      setPromises(data.caught_promises);
-      setAllEntities(data.memory_entities);
+      setPromises(data.caught_promises ?? []);
+      setAllEntities(data.memory_entities ?? []);
+      setActivityLog(data.activity_log ?? []);
       setProviders(data.providers ?? {});
-      const latestNudged = data.caught_promises.find((promise) => promise.status === "NUDGED");
+      const latestNudged = (data.caught_promises ?? []).find(
+        (promise) => promise.status === "NUDGED",
+      );
       if (latestNudged) {
         setNudge((current) => current ?? nudgeFromPromise(latestNudged, data.focus_level));
       }
@@ -166,6 +172,33 @@ export default function Page() {
   useEffect(() => {
     void refreshState();
   }, [refreshState]);
+
+  // Ambient OS context is polled slowly: it changes when the user switches
+  // windows, not several times a second.
+  useEffect(() => {
+    let cancelled = false;
+    async function readAmbient() {
+      try {
+        const response = await fetch(`${API_BASE}/api/ambient`, { cache: "no-store" });
+        if (!response.ok) return;
+        const data = (await response.json()) as {
+          ambient: AmbientContext;
+          supported: boolean;
+        };
+        if (cancelled) return;
+        setAmbient(data.ambient);
+        setAmbientSupported(Boolean(data.supported));
+      } catch {
+        // The sensor is optional; a failure just means no ambient context.
+      }
+    }
+    void readAmbient();
+    const interval = window.setInterval(readAmbient, 15000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(interval);
+    };
+  }, []);
 
   // Nudge stream is independent of the chat request. EventSource reconnects
   // automatically if the daemon restarts while a focus session is open.
@@ -195,6 +228,12 @@ export default function Page() {
               : promise,
           ),
         );
+      } else if (event.type === "AUTO_VERIFIED_SILENT") {
+        mergePromises([event.promise]);
+        setAutoVerified({
+          note: event.verification_note,
+          recipient: event.promise.recipient,
+        });
       } else if (event.type === "PROMISE_CAUGHT" || event.type === "PROMISE_UPDATED") {
         mergePromises([event.promise]);
       }
@@ -207,7 +246,7 @@ export default function Page() {
       if (speculateDebounceRef.current) window.clearTimeout(speculateDebounceRef.current);
       if (speculatePollRef.current) window.clearTimeout(speculatePollRef.current);
       speculateAbortRef.current?.abort();
-      abortRef.current?.abort();
+      streamRef.current?.abort();
     };
   }, []);
 
@@ -216,53 +255,64 @@ export default function Page() {
     [promises],
   );
   const queuedCount = activePromises.filter((promise) => promise.status === "QUEUED_QUIET").length;
+  const autoVerifiedCount = activePromises.filter(
+    (promise) => promise.status === "AUTO_VERIFIED_SILENT",
+  ).length;
 
-  const speculativelyFetch = useCallback(async (text: string, attemptsRemaining: number) => {
-    const sequence = ++speculateSequenceRef.current;
-    speculateAbortRef.current?.abort();
-    const controller = new AbortController();
+  const speculativelyFetch = useCallback(
+    async (text: string, attemptsRemaining: number) => {
+      const sequence = ++speculateSequenceRef.current;
+      speculateAbortRef.current?.abort();
+      const controller = new AbortController();
 
-    try {
-      const response = await fetch(`${API_BASE}/api/speculate`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ partial_text: text }),
-        signal: controller.signal,
-      });
-      if (!response.ok) return;
-      const data = (await response.json()) as {
-        matched_entities: MemoryEntity[];
-        predicted_queries: string[];
-        warmed: boolean;
-        saved_ms: number;
-        status: "WARMED" | "WARMING" | "IDLE";
-        speculative_query: string | null;
-      };
-      if (sequence !== speculateSequenceRef.current) return;
+      try {
+        const response = await fetch(`${API_BASE}/api/speculate`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            partial_text: text,
+            ...(activeApp ? { active_app: activeApp } : {}),
+          }),
+          signal: controller.signal,
+        });
+        if (!response.ok) return;
+        const data = (await response.json()) as {
+          matched_entities: MemoryEntity[];
+          predicted_queries: string[];
+          warmed: boolean;
+          saved_ms: number;
+          status: "WARMED" | "WARMING" | "IDLE";
+          speculative_query: string | null;
+          active_app: AmbientContext | null;
+        };
+        if (sequence !== speculateSequenceRef.current) return;
 
-      setSpeculation({
-        status: data.status,
-        matchedEntities: data.matched_entities,
-        predictedQueries: data.predicted_queries,
-        savedMs: data.saved_ms,
-        speculativeQuery: data.speculative_query,
-      });
+        setSpeculation({
+          status: data.status,
+          matchedEntities: data.matched_entities,
+          predictedQueries: data.predicted_queries,
+          savedMs: data.saved_ms,
+          speculativeQuery: data.speculative_query,
+        });
+        if (data.active_app) setAmbient(data.active_app);
 
-      if (data.status === "WARMING" && attemptsRemaining > 0) {
-        if (speculatePollRef.current) window.clearTimeout(speculatePollRef.current);
-        speculatePollRef.current = window.setTimeout(() => {
-          if (speculateSequenceRef.current === sequence) {
-            void speculativelyFetch(text, attemptsRemaining - 1);
-          }
-        }, 1700);
+        if (data.status === "WARMING" && attemptsRemaining > 0) {
+          if (speculatePollRef.current) window.clearTimeout(speculatePollRef.current);
+          speculatePollRef.current = window.setTimeout(() => {
+            if (speculateSequenceRef.current === sequence) {
+              void speculativelyFetch(text, attemptsRemaining - 1);
+            }
+          }, 1700);
+        }
+      } catch (error) {
+        // Speculation is ambient and must never interrupt typing.
+        if (!(error instanceof DOMException && error.name === "AbortError")) {
+          console.warn("Chronos speculation prefetch failed", error);
+        }
       }
-    } catch (error) {
-      // Speculation is ambient and must never interrupt typing.
-      if (!(error instanceof DOMException && error.name === "AbortError")) {
-        console.warn("Chronos speculation prefetch failed", error);
-      }
-    }
-  }, []);
+    },
+    [activeApp],
+  );
 
   const handleInputChange = useCallback(
     (value: string) => {
@@ -321,9 +371,7 @@ export default function Page() {
           const releasedIds = new Set(data.released.map((item) => item.promise_id));
           setSimulation((current) => {
             if (!current || !releasedIds.has(current.promiseId)) return current;
-            const release = data.released.find(
-              (item) => item.promise_id === current.promiseId,
-            );
+            const release = data.released.find((item) => item.promise_id === current.promiseId);
             return {
               ...current,
               gated: false,
@@ -357,50 +405,86 @@ export default function Page() {
         mergePromises([data.promise]);
         setNudge((current) => (current?.promise_id === promiseId ? null : current));
         setSimulation((current) => (current?.promiseId === promiseId ? null : current));
+        void refreshState();
       } catch (error) {
         setErrorBanner(error instanceof Error ? error.message : "Could not resolve the promise.");
         throw error;
       }
     },
-    [mergePromises],
+    [mergePromises, refreshState],
   );
 
-  const handleSimulate = useCallback(async () => {
-    if (isSimulating) return;
-    setIsSimulating(true);
-    setErrorBanner(null);
-    try {
-      const response = await fetch(`${API_BASE}/api/simulate-mutation`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ focus_level: focusLevel }),
-      });
-      if (!response.ok) throw new Error(await parseApiError(response));
-      const data = (await response.json()) as SimulateMutationResponse;
-      mergePromises([data.promise]);
-      setSimulation({
-        message: data.message,
-        gated: data.gated,
-        urgency: data.urgency,
-        focusLevel: data.focus_level,
-        promiseId: data.promise.id,
-      });
-      if (data.nudge) {
-        setNudge(data.nudge);
-      } else {
-        setNudge((current) =>
-          current && current.promise_id === data.promise.id ? null : current,
+  const handleSimulate = useCallback(
+    async (alreadyCompleted = false) => {
+      if (isSimulating) return;
+      setIsSimulating(true);
+      setErrorBanner(null);
+      try {
+        const response = await fetch(`${API_BASE}/api/simulate-mutation`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ focus_level: focusLevel, already_completed: alreadyCompleted }),
+        });
+        if (!response.ok) throw new Error(await parseApiError(response));
+        const data = (await response.json()) as SimulateMutationResponse;
+        mergePromises([data.promise]);
+        setSimulation({
+          message: data.message,
+          gated: data.gated,
+          urgency: data.urgency,
+          focusLevel: data.focus_level,
+          promiseId: data.promise.id,
+          autoVerified: Boolean(data.auto_verified),
+          verificationNote: data.verification_note ?? null,
+        });
+        if (data.auto_verified) {
+          setAutoVerified({
+            note: data.verification_note ?? data.message,
+            recipient: data.promise.recipient,
+          });
+        }
+        if (data.nudge) {
+          setNudge(data.nudge);
+        } else {
+          setNudge((current) =>
+            current && current.promise_id === data.promise.id ? null : current,
+          );
+        }
+        setFocusLevel(normalizeFocus(data.focus_level));
+        void refreshState();
+      } catch (error) {
+        setErrorBanner(
+          error instanceof Error ? error.message : "Simulated webpage mutation failed.",
         );
+      } finally {
+        setIsSimulating(false);
       }
-      setFocusLevel(normalizeFocus(data.focus_level));
+    },
+    [focusLevel, isSimulating, mergePromises, refreshState],
+  );
+
+  const handleExportTrace = useCallback(async () => {
+    setIsExportingTrace(true);
+    try {
+      const response = await fetch(`${API_BASE}/api/trace/export`, { cache: "no-store" });
+      if (!response.ok) throw new Error(await parseApiError(response));
+      const blob = await response.blob();
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = "chronos-trace.json";
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(url);
     } catch (error) {
       setErrorBanner(
-        error instanceof Error ? error.message : "Simulated webpage mutation failed.",
+        error instanceof Error ? error.message : "Could not export the trace.",
       );
     } finally {
-      setIsSimulating(false);
+      setIsExportingTrace(false);
     }
-  }, [focusLevel, isSimulating, mergePromises]);
+  }, []);
 
   const applyNodeUpdate = useCallback(
     (event: Extract<ChronosEvent, { type: "NODE_UPDATE" }>) => {
@@ -415,6 +499,7 @@ export default function Page() {
           chunks_found: event.chunks_found,
           cached: event.cached,
           detail: event.detail,
+          wave: event.wave ?? 1,
         };
         const found = previous.some((node) => node.id === event.node_id);
         if (!found) return [...previous, fallback];
@@ -427,6 +512,7 @@ export default function Page() {
                 chunks_found: event.chunks_found,
                 cached: event.cached,
                 detail: event.detail,
+                wave: event.wave ?? node.wave,
               }
             : node,
         );
@@ -435,19 +521,37 @@ export default function Page() {
     [],
   );
 
-  const appendToAssistant = useCallback((id: string, delta: string) => {
+  const flushTokens = useCallback(() => {
+    tokenFrameRef.current = null;
+    const buffered = tokenBufferRef.current;
+    if (!buffered) return;
+    tokenBufferRef.current = "";
+    const assistantId = activeAssistantIdRef.current;
+    if (!assistantId) return;
     setMessages((previous) =>
       previous.map((message) =>
-        message.id === id ? { ...message, content: message.content + delta } : message,
+        message.id === assistantId ? { ...message, content: message.content + buffered } : message,
       ),
     );
   }, []);
+
+  const appendToAssistant = useCallback(
+    (id: string, delta: string) => {
+      tokenBufferRef.current += delta;
+      if (tokenFrameRef.current === null) {
+        tokenFrameRef.current = window.requestAnimationFrame(flushTokens);
+      }
+      void id;
+    },
+    [flushTokens],
+  );
 
   const handleChatEvent = useCallback(
     (event: ChronosEvent, assistantId: string) => {
       switch (event.type) {
         case "HYDRATION": {
           setHydration(event);
+          if (event.active_app) setAmbient(event.active_app);
           setActivityLabel(
             event.entities.length > 0
               ? `Hydrating ${event.entities.length} local ${event.entities.length === 1 ? "entity" : "entities"} · planning DAG…`
@@ -492,11 +596,16 @@ export default function Page() {
               ? previous
               : [...previous, { ...event.node, status: "PENDING" }],
           );
-          setActivityLabel(`Self-healing DAG · grafting ${event.node.id}`);
+          setActivityLabel(
+            event.node.wave === 2
+              ? `Wave 2 · follow-up interpolated from wave 1`
+              : `Self-healing DAG · grafting ${event.node.id}`,
+          );
           break;
         }
         case "SIEVE_METRICS": {
           setMetrics(event);
+          setTimings(event.stage_timings_ms ?? null);
           setActivityLabel(
             `BM25 sieve complete · streaming a grounded answer from ${event.sources.length} chunks…`,
           );
@@ -518,6 +627,14 @@ export default function Page() {
           setNudge(event.nudge);
           break;
         }
+        case "AUTO_VERIFIED_SILENT": {
+          mergePromises([event.promise]);
+          setAutoVerified({
+            note: event.verification_note,
+            recipient: event.promise.recipient,
+          });
+          break;
+        }
         case "PROMISE_UPDATED": {
           mergePromises([event.promise]);
           break;
@@ -537,7 +654,12 @@ export default function Page() {
           );
           break;
         }
-        case "DONE":
+        case "DONE": {
+          // The sieve event carries the partial budget; the DONE event
+          // carries the final one, including synthesis and the total.
+          if (event.stage_timings_ms) setTimings(event.stage_timings_ms);
+          break;
+        }
         case "HELLO":
           break;
       }
@@ -546,7 +668,13 @@ export default function Page() {
   );
 
   const handleStop = useCallback(() => {
-    abortRef.current?.abort();
+    streamRef.current?.abort();
+    streamRef.current = null;
+    if (tokenFrameRef.current !== null) {
+      window.cancelAnimationFrame(tokenFrameRef.current);
+      tokenFrameRef.current = null;
+    }
+    flushTokens();
     const assistantId = activeAssistantIdRef.current;
     if (assistantId) {
       setMessages((previous) =>
@@ -555,6 +683,21 @@ export default function Page() {
         ),
       );
     }
+  }, [flushTokens]);
+
+  const handleNewConversation = useCallback(() => {
+    streamRef.current?.abort();
+    streamRef.current = null;
+    setMessages([]);
+    setNodes([]);
+    setMetrics(null);
+    setTimings(null);
+    setHydration(null);
+    setPlanner(null);
+    setContradictions([]);
+    setHighlightedSourceId(null);
+    setSimulation(null);
+    setActivityLabel("");
   }, []);
 
   const handleSend = useCallback(
@@ -571,12 +714,14 @@ export default function Page() {
       setNodes([]);
       setPlanner(null);
       setMetrics(null);
+      setTimings(null);
       setSimulation(null);
       setActivityLabel("Hydrating local context…");
 
       const userId = newId("user");
       const assistantId = newId("chronos");
       activeAssistantIdRef.current = assistantId;
+      tokenBufferRef.current = "";
       setMessages((previous) => [
         ...previous,
         { id: userId, role: "user", content: text },
@@ -585,69 +730,13 @@ export default function Page() {
       isStreamingRef.current = true;
       setIsStreaming(true);
 
-      const controller = new AbortController();
-      abortRef.current = controller;
-      let receivedDone = false;
-      let receivedEngineError = false;
-
-      try {
-        const response = await fetch(`${API_BASE}/api/chat/stream`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ message: text, focus_level: focusLevel }),
-          signal: controller.signal,
-        });
-        if (!response.ok) throw new Error(await parseApiError(response));
-        if (!response.body) throw new Error("The engine returned an empty stream.");
-
-        const reader = response.body.getReader();
-        const decoder = new TextDecoder();
-        let buffer = "";
-
-        const consume = (block: string) => {
-          const event = parseSseBlock(block);
-          if (!event) return;
-          if (event.type === "DONE") receivedDone = true;
-          if (event.type === "ERROR") receivedEngineError = true;
-          handleChatEvent(event, assistantId);
-        };
-
-        while (true) {
-          const { value, done } = await reader.read();
-          if (done) break;
-          buffer += decoder.decode(value, { stream: true });
-          let separator = buffer.indexOf("\n\n");
-          while (separator !== -1) {
-            const block = buffer.slice(0, separator);
-            buffer = buffer.slice(separator + 2);
-            consume(block);
-            separator = buffer.indexOf("\n\n");
-          }
-        }
-        buffer += decoder.decode();
-        if (buffer.trim()) consume(buffer);
-
-        if (!receivedDone && !receivedEngineError && !controller.signal.aborted) {
-          setErrorBanner("The trace stream closed before DONE. Partial telemetry is preserved.");
-        }
-      } catch (error) {
-        if (error instanceof DOMException && error.name === "AbortError") {
-          setMessages((previous) =>
-            previous.map((message) =>
-              message.id === assistantId
-                ? {
-                    ...message,
-                    stopped: true,
-                    content:
-                      message.content ||
-                      "Stream stopped before the first token arrived. The DAG telemetry was preserved.",
-                  }
-                : message,
-            ),
-          );
-        } else {
-          const message =
-            error instanceof Error ? error.message : "The Chronos engine could not be reached.";
+      streamRef.current = streamChat({
+        apiBase: API_BASE,
+        message: text,
+        focusLevel,
+        activeApp: activeApp || undefined,
+        onEvent: (event) => handleChatEvent(event, assistantId),
+        onError: (message) => {
           setErrorBanner(message);
           setMessages((previous) =>
             previous.map((item) =>
@@ -660,18 +749,18 @@ export default function Page() {
                 : item,
             ),
           );
-        }
-      } finally {
-        if (abortRef.current === controller) {
-          abortRef.current = null;
+        },
+        onDone: () => {
+          flushTokens();
           isStreamingRef.current = false;
           setIsStreaming(false);
           activeAssistantIdRef.current = null;
+          streamRef.current = null;
           setActivityLabel("");
-        }
-      }
+        },
+      });
     },
-    [focusLevel, handleChatEvent, input],
+    [activeApp, focusLevel, flushTokens, handleChatEvent, input],
   );
 
   return (
@@ -681,12 +770,21 @@ export default function Page() {
         onFocusChange={handleFocusChange}
         activePromises={activePromises.length}
         queuedPromises={queuedCount}
+        autoVerifiedPromises={autoVerifiedCount}
         connection={connection}
         isChangingFocus={isChangingFocus}
+        activeApp={activeApp}
+        onActiveAppChange={setActiveApp}
+        ambient={ambient}
+        ambientSupported={ambientSupported}
+        onToggleInspector={() => setShowInspector((current) => !current)}
+        showInspector={showInspector}
+        onNewConversation={handleNewConversation}
+        hasMessages={messages.length > 0}
       />
 
       <main className="grid min-h-0 flex-1 grid-cols-12 overflow-hidden">
-        <section className="relative col-span-12 flex min-h-0 min-w-0 flex-col border-r border-tint/[0.07] lg:col-span-7">
+        <section className="relative col-span-12 flex min-h-0 min-w-0 flex-col border-r border-tint/[0.06] lg:col-span-7">
           <ChatPane
             input={input}
             onInputChange={handleInputChange}
@@ -703,6 +801,8 @@ export default function Page() {
             contradictions={contradictions}
             onCitationHover={setHighlightedSourceId}
             connected={connection === "live"}
+            activeApp={activeApp}
+            ambient={ambient}
             nudgeSlot={
               nudge ? (
                 <NudgePill
@@ -712,27 +812,59 @@ export default function Page() {
                 />
               ) : null
             }
+            autoVerifiedSlot={
+              autoVerified ? (
+                <AutoVerifiedBanner
+                  note={autoVerified.note}
+                  recipient={autoVerified.recipient}
+                  onDismiss={() => setAutoVerified(null)}
+                />
+              ) : null
+            }
           />
         </section>
 
-        <section className="col-span-12 hidden min-h-0 overflow-hidden lg:col-span-5 lg:block">
-          <InspectorPane
-            hydration={hydration}
-            allEntities={allEntities}
-            speculation={speculation}
-            nodes={nodes}
-            planner={planner}
-            metrics={metrics}
-            promises={activePromises}
-            focusLevel={focusLevel}
-            highlightedSourceId={highlightedSourceId}
-            onCitationHover={setHighlightedSourceId}
-            onSimulate={() => void handleSimulate()}
-            isSimulating={isSimulating}
-            simulation={simulation}
-            providers={providers}
-            connected={connection === "live"}
-          />
+        <section
+          className={clsxPanel(
+            "col-span-12 min-h-0 overflow-hidden lg:col-span-5 lg:block",
+            showInspector ? "fixed inset-y-12 right-0 z-40 w-[min(92vw,460px)] shadow-2xl" : "hidden",
+          )}
+        >
+          <div className="flex h-9 shrink-0 items-center justify-end border-b border-tint/[0.045] px-3 lg:hidden">
+            <button
+              type="button"
+              onClick={() => setShowInspector(false)}
+              className="flex items-center gap-1.5 rounded-[8px] border border-tint/[0.07] bg-tint/[0.03] px-2.5 py-1.5 font-mono text-[10.5px] uppercase tracking-[0.1em] text-muted"
+            >
+              <X size={11} />
+              close inspector
+            </button>
+          </div>
+          <div className="h-[calc(100%-36px)] lg:h-full">
+            <InspectorPane
+              hydration={hydration}
+              allEntities={allEntities}
+              speculation={speculation}
+              nodes={nodes}
+              planner={planner}
+              metrics={metrics}
+              timings={timings}
+              promises={activePromises}
+              focusLevel={focusLevel}
+              highlightedSourceId={highlightedSourceId}
+              onCitationHover={setHighlightedSourceId}
+              onSimulate={() => void handleSimulate(false)}
+              onSimulateCompleted={() => void handleSimulate(true)}
+              isSimulating={isSimulating}
+              simulation={simulation}
+              providers={providers}
+              connected={connection === "live"}
+              ambient={ambient}
+              activityLog={activityLog}
+              onExportTrace={() => void handleExportTrace()}
+              isExportingTrace={isExportingTrace}
+            />
+          </div>
         </section>
       </main>
 
@@ -761,4 +893,9 @@ export default function Page() {
       ) : null}
     </div>
   );
+}
+
+/** Tiny helper so the inspector panel can toggle without pulling in clsx here. */
+function clsxPanel(...values: Array<string | false | undefined>): string {
+  return values.filter(Boolean).join(" ");
 }

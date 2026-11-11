@@ -1,13 +1,17 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import clsx from "clsx";
 import {
   AlertTriangle,
   ArrowUp,
+  Check,
+  ClipboardCopy,
   CornerDownLeft,
   Database,
   GitCompare,
+  Loader2,
+  Monitor,
   Radio,
   Search,
   Sparkles,
@@ -15,6 +19,7 @@ import {
   Zap,
 } from "lucide-react";
 import type {
+  AmbientContext,
   ChatMessage,
   Contradiction,
   SieveMetricsEvent,
@@ -35,7 +40,10 @@ interface ChatPaneProps {
   contradictions: Contradiction[];
   onCitationHover: (sourceId: string | null) => void;
   connected: boolean;
+  activeApp?: string;
+  ambient?: AmbientContext | null;
   nudgeSlot?: React.ReactNode;
+  autoVerifiedSlot?: React.ReactNode;
 }
 
 const STARTER_PROMPTS = [
@@ -50,6 +58,12 @@ const STARTER_PROMPTS = [
       "Compare FastAPI vs Go Fiber tail latency benchmarks against our target latency—I'll update the architecture doc once v3 benchmarks drop.",
     eyebrow: "BENCHMARK + COMMITMENT",
     icon: GitCompare,
+  },
+  {
+    prompt:
+      "Search obscure legacy WebRTC bug (trigger heal) and check workarounds for my stack.",
+    eyebrow: "HEALING BRANCH",
+    icon: Zap,
   },
 ];
 
@@ -68,7 +82,11 @@ function CitationButton({
       type="button"
       className="citation-pill"
       aria-label={`Highlight ${sourceId}${source ? ` — ${source.title}` : ""} in the glass-box inspector`}
-      title={source ? `${source.title} · BM25 ${source.bm25_score.toFixed(2)}` : sourceId}
+      title={
+        source
+          ? `${source.title} · ${source.domain || "unknown host"} · composite ${source.composite_score.toFixed(2)}`
+          : sourceId
+      }
       onMouseEnter={() => onHover(sourceId)}
       onMouseLeave={() => onHover(null)}
       onFocus={() => onHover(sourceId)}
@@ -106,6 +124,37 @@ function MessageCopy({
         return <span key={`text-${index}`}>{part}</span>;
       })}
     </div>
+  );
+}
+
+function CopyAnswerButton({ content }: { content: string }) {
+  const [copied, setCopied] = useState(false);
+
+  useEffect(() => {
+    if (!copied) return;
+    const timeout = window.setTimeout(() => setCopied(false), 2000);
+    return () => window.clearTimeout(timeout);
+  }, [copied]);
+
+  async function copy() {
+    try {
+      await navigator.clipboard.writeText(content);
+      setCopied(true);
+    } catch {
+      setCopied(false);
+    }
+  }
+
+  return (
+    <button
+      type="button"
+      onClick={copy}
+      className="flex items-center gap-1 rounded-[6px] border border-tint/[0.06] bg-tint/[0.02] px-1.5 py-[3px] font-mono text-[10px] uppercase tracking-[0.09em] text-faint transition-colors hover:border-accent/25 hover:text-accent-fg"
+      title="Copy this answer to the clipboard"
+    >
+      {copied ? <Check size={9} className="text-accent-fg" /> : <ClipboardCopy size={9} />}
+      {copied ? "copied" : "copy"}
+    </button>
   );
 }
 
@@ -193,11 +242,15 @@ export default function ChatPane({
   contradictions,
   onCitationHover,
   connected,
+  activeApp,
+  ambient,
   nudgeSlot,
+  autoVerifiedSlot,
 }: ChatPaneProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const endRef = useRef<HTMLDivElement>(null);
+  const stickToBottomRef = useRef(true);
   const [inputFocused, setInputFocused] = useState(false);
 
   const sources = metrics?.sources ?? [];
@@ -206,7 +259,18 @@ export default function ChatPane({
     .find((message) => message.role === "assistant")?.id;
   const lastMessage = messages[messages.length - 1];
 
+  // Only auto-scroll when the reader is already at the bottom. Force-scrolling
+  // on every token made it impossible to read an earlier answer while the
+  // next one streamed in.
+  const handleScroll = useCallback(() => {
+    const element = scrollRef.current;
+    if (!element) return;
+    const distance = element.scrollHeight - element.scrollTop - element.clientHeight;
+    stickToBottomRef.current = distance < 120;
+  }, []);
+
   useEffect(() => {
+    if (!stickToBottomRef.current) return;
     endRef.current?.scrollIntoView({ block: "end", behavior: isStreaming ? "auto" : "smooth" });
   }, [messages, isStreaming, contradictions]);
 
@@ -241,18 +305,24 @@ export default function ChatPane({
 
   const showIdleState = messages.length === 0;
   const showSpeculation = !isStreaming && speculation && speculation.status !== "IDLE";
+  const ambientLabel =
+    activeApp || (ambient?.available ? `${ambient.app || "Ambient"} ${ambient.title || ""}`.trim() : "");
 
   return (
     <div className="relative flex h-full min-h-0 flex-col">
-      {nudgeSlot ? (
-        <div className="relative z-30 shrink-0 px-3 pb-2 pt-2.5 sm:px-4">{nudgeSlot}</div>
+      {nudgeSlot || autoVerifiedSlot ? (
+        <div className="relative z-30 shrink-0 space-y-2 px-3 pb-2 pt-2.5 sm:px-4">
+          {nudgeSlot}
+          {autoVerifiedSlot}
+        </div>
       ) : null}
+
       <div className="flex h-9 shrink-0 items-center justify-between border-b border-tint/[0.045] px-5">
-        <div className="flex items-center gap-2">
+        <div className="flex min-w-0 items-center gap-2">
           <span className="font-mono text-[11px] uppercase tracking-[0.16em] text-faint">
             Ambient session
           </span>
-          <span className="h-[3px] w-[3px] rounded-full bg-tint/15" />
+          <span className="hidden h-[3px] w-[3px] rounded-full bg-tint/15 sm:block" />
           <span className="flex items-center gap-1.5 font-mono text-[11px] uppercase tracking-[0.12em] text-muted">
             <span
               className={clsx(
@@ -263,21 +333,36 @@ export default function ChatPane({
             {connected ? "nudge stream armed" : "reconnecting"}
           </span>
         </div>
-        <div className="flex items-center gap-1.5 text-[11px] text-faint">
-          <Database size={9.5} />
-          <span className="font-mono uppercase tracking-[0.11em]">local context</span>
+        <div className="flex items-center gap-2.5 text-[11px] text-faint">
+          {ambientLabel ? (
+            <span
+              className="hidden max-w-[220px] items-center gap-1.5 font-mono uppercase tracking-[0.1em] sm:flex"
+              title="Ambient OS context folded into the search DAG"
+            >
+              <Monitor size={9.5} className="text-accent-fg/70" />
+              <span className="truncate">{ambientLabel}</span>
+            </span>
+          ) : null}
+          <span className="hidden items-center gap-1.5 font-mono uppercase tracking-[0.11em] sm:flex">
+            <Database size={9.5} />
+            local context
+          </span>
         </div>
       </div>
 
       <div
         ref={scrollRef}
-        className="scrollbar-subtle relative flex-1 overflow-y-auto overflow-x-hidden px-5 pb-6 pt-5 sm:px-7"
+        onScroll={handleScroll}
+        className="scrollbar-subtle relative flex-1 overflow-y-auto overflow-x-hidden px-5 pb-14 pt-6 sm:px-7"
       >
         {showIdleState ? (
-          <div className="mx-auto flex min-h-full max-w-[595px] flex-col justify-center pb-5 pt-6">
-            <div className="animate-fade-up">
+          <div className="mx-auto flex min-h-full max-w-[620px] flex-col pb-6 pt-2">
+            {/* `my-auto` centres the block when there is room and simply
+                scrolls it into view when there is not — `justify-center`
+                clips the overflow on short viewports. */}
+            <div className="my-auto animate-fade-up">
               <div className="mb-5 flex items-center gap-2.5">
-                <div className="relative flex h-8 w-8 items-center justify-center rounded-[10px] border border-accent/25 bg-accent/[0.09] text-accent-fg shadow-[inset_0_1px_0_rgba(255,255,255,0.08),0_0_30px_rgba(99,102,241,0.08)]">
+                <div className="relative flex h-8 w-8 items-center justify-center rounded-[10px] border border-accent/25 bg-accent/[0.09] text-accent-fg shadow-[inset_0_1px_0_rgba(255,255,255,0.08),0_0_30px_rgba(16,185,129,0.1)]">
                   <Sparkles size={14} strokeWidth={1.8} />
                   <span className="absolute -right-0.5 -top-0.5 h-1.5 w-1.5 rounded-full border border-canvas bg-healthy" />
                 </div>
@@ -291,12 +376,12 @@ export default function ChatPane({
                 </div>
               </div>
 
-              <h1 className="max-w-[470px] text-[30px] font-semibold leading-[1.14] tracking-[-0.045em] text-ink-strong">
-                Research the web.
+              <h1 className="font-display max-w-[520px] text-[34px] leading-[1.1] tracking-[-0.035em] text-ink-strong sm:text-[42px]">
+                Find what you need.
                 <br />
                 <span className="text-faint">Keep your word.</span>
               </h1>
-              <p className="mt-3.5 max-w-[455px] text-[13px] leading-[1.75] text-muted">
+              <p className="mt-3.5 max-w-[470px] text-[13.5px] leading-[1.75] text-muted">
                 Chronos decomposes the question, hedges every source, and keeps watching the
                 thing you&apos;re waiting on. Your local context never becomes a search query.
               </p>
@@ -316,18 +401,20 @@ export default function ChatPane({
                       key={starter.eyebrow}
                       type="button"
                       onClick={() => onSend(starter.prompt)}
-                      className="group relative w-full overflow-hidden rounded-[12px] border border-tint/[0.075] bg-tint/[0.018] px-3.5 py-3 text-left transition-all duration-200 hover:border-accent/25 hover:bg-accent/[0.035]"
+                      className="group relative w-full overflow-hidden rounded-[14px] border border-tint/[0.07] bg-tint/[0.014] px-4 py-3 text-left transition-all duration-200 hover:border-accent/25 hover:bg-accent/[0.03]"
                     >
                       <div className="flex items-start gap-3">
-                        <div className="mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-[7px] border border-tint/[0.07] bg-tint/[0.03] text-muted transition-colors group-hover:border-accent/20 group-hover:text-accent-fg">
-                          <Icon size={12} />
+                        <div className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-[9px] border border-tint/[0.07] bg-tint/[0.03] text-muted transition-colors group-hover:border-accent/20 group-hover:text-accent-fg">
+                          <Icon size={13} />
                         </div>
                         <div className="min-w-0">
                           <div className="flex items-center gap-2">
                             <span className="font-mono text-[10.5px] uppercase tracking-[0.14em] text-faint transition-colors group-hover:text-accent-fg/70">
                               {starter.eyebrow}
                             </span>
-                            <span className="font-mono text-[10.5px] text-tint/15">0{index + 1}</span>
+                            <span className="font-mono text-[10.5px] text-tint/15">
+                              0{index + 1}
+                            </span>
                           </div>
                           <p className="mt-1 text-[12.5px] leading-[1.55] text-muted transition-colors group-hover:text-ink">
                             {starter.prompt}
@@ -343,7 +430,7 @@ export default function ChatPane({
                 })}
               </div>
 
-              <div className="mt-6 grid grid-cols-3 gap-2">
+              <div className="mt-6 hidden grid-cols-3 gap-2 sm:grid">
                 {[
                   { icon: Database, label: "SQLite graph", detail: "hydrated pre-flight" },
                   { icon: Search, label: "Hedged retrieval", detail: "1.8s per URL" },
@@ -353,7 +440,7 @@ export default function ChatPane({
                   return (
                     <div
                       key={feature.label}
-                      className="rounded-[8px] border border-tint/[0.05] bg-tint/[0.012] px-2.5 py-2"
+                      className="rounded-[10px] border border-tint/[0.05] bg-tint/[0.012] px-2.5 py-2.5"
                     >
                       <Icon size={10.5} className="text-faint" />
                       <p className="mt-1.5 text-[11px] font-medium text-muted">{feature.label}</p>
@@ -391,8 +478,13 @@ export default function ChatPane({
                           </span>
                         ) : null}
                         {isPendingAssistant ? (
-                          <span className="font-mono text-[10.5px] uppercase tracking-[0.12em] text-faint animate-pulse-soft">
+                          <span className="animate-pulse-soft font-mono text-[10.5px] uppercase tracking-[0.12em] text-faint">
                             streaming
+                          </span>
+                        ) : null}
+                        {isLatestAssistant && !isStreaming && message.content ? (
+                          <span className="ml-auto opacity-0 transition-opacity group-hover:opacity-100">
+                            <CopyAnswerButton content={message.content} />
                           </span>
                         ) : null}
                       </div>
@@ -436,7 +528,11 @@ export default function ChatPane({
                               <span className="font-mono text-[11px] uppercase tracking-[0.06em] text-faint">
                                 BM25 peak ×{metrics.peak_bm25.toFixed(2)}
                               </span>
-                              <span className="ml-auto flex items-center gap-1 text-[11px] text-faint">
+                              <span className="h-[3px] w-[3px] rounded-full bg-tint/15" />
+                              <span className="font-mono text-[11px] uppercase tracking-[0.06em] text-faint">
+                                composite {metrics.peak_composite_score.toFixed(2)}
+                              </span>
+                              <span className="ml-auto hidden items-center gap-1 text-[11px] text-faint sm:flex">
                                 hover a citation to inspect
                               </span>
                             </div>
@@ -465,7 +561,7 @@ export default function ChatPane({
       </div>
 
       <div className="relative shrink-0 px-5 pb-4 sm:px-7">
-        <div className="pointer-events-none absolute inset-x-0 -top-12 h-12 bg-gradient-to-t from-canvas via-canvas/85 to-transparent" />
+        <div className="pointer-events-none absolute inset-x-0 -top-10 h-10 bg-gradient-to-t from-canvas via-canvas/85 to-transparent" />
         <div className="relative mx-auto max-w-[660px]">
           <div className="flex h-[22px] items-center px-1">
             {showSpeculation ? (
@@ -509,7 +605,7 @@ export default function ChatPane({
 
           <div
             className={clsx(
-              "relative rounded-[14px] border bg-field/95 shadow-[0_16px_38px_rgba(0,0,0,0.28),inset_0_1px_0_rgba(255,255,255,0.045)] backdrop-blur-xl transition-colors duration-200",
+              "relative rounded-[16px] border bg-field/95 shadow-[0_16px_38px_rgba(0,0,0,0.26),inset_0_1px_0_rgba(255,255,255,0.045)] backdrop-blur-xl transition-colors duration-200",
               inputFocused
                 ? "border-accent/35 input-focused"
                 : "border-tint/[0.09] hover:border-tint/[0.13]",
@@ -533,7 +629,7 @@ export default function ChatPane({
                     ? "Chronos is tracing the answer…"
                     : "Ask anything or make a commitment…"
                 }
-                className="scrollbar-subtle min-h-[32px] max-h-[132px] flex-1 resize-none bg-transparent px-0.5 py-1.5 text-[13px] leading-[1.55] tracking-[-0.005em] text-ink outline-none placeholder:text-faint disabled:cursor-not-allowed disabled:opacity-70"
+                className="composer-input scrollbar-subtle min-h-[32px] max-h-[132px] flex-1 resize-none bg-transparent px-0.5 py-1.5 text-[13px] leading-[1.55] tracking-[-0.005em] text-ink outline-none placeholder:text-faint disabled:cursor-not-allowed disabled:opacity-70"
                 aria-label="Ask Chronos"
               />
               <button
@@ -541,11 +637,11 @@ export default function ChatPane({
                 onClick={submit}
                 disabled={!isStreaming && !input.trim()}
                 className={clsx(
-                  "mb-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-[8px] border transition-all duration-200",
+                  "mb-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-[9px] border transition-all duration-200",
                   isStreaming
                     ? "border-healing/25 bg-healing/[0.09] text-healing hover:bg-healing/[0.15]"
                     : input.trim()
-                      ? "border-accent/30 bg-accent/[0.18] text-accent-fg shadow-[0_0_18px_rgba(99,102,241,0.12)] hover:bg-accent/[0.26]"
+                      ? "border-accent/30 bg-accent/[0.18] text-accent-fg shadow-[0_0_18px_rgba(16,185,129,0.16)] hover:bg-accent/[0.26]"
                       : "border-tint/[0.06] bg-tint/[0.025] text-faint",
                 )}
                 aria-label={isStreaming ? "Stop response" : "Send message"}
@@ -560,12 +656,12 @@ export default function ChatPane({
             </div>
           </div>
 
-          <div className="mt-2 flex items-center justify-between px-1">
+          <div className="mt-2 flex items-center justify-between gap-3 px-1">
             <p className="flex items-center gap-1.5 text-[11px] text-faint">
-              <span className="h-1 w-1 rounded-full bg-healthy/70" />
-              Local-first context · search leaves no memory of you
+              <span className="h-1 w-1 shrink-0 rounded-full bg-healthy/70" />
+              <span className="truncate">Local-first context · search leaves no memory of you</span>
             </p>
-            <p className="font-mono text-[10.5px] uppercase tracking-[0.08em] text-faint/80">
+            <p className="hidden shrink-0 font-mono text-[10.5px] uppercase tracking-[0.08em] text-faint/80 sm:block">
               SSE · trace live
             </p>
           </div>

@@ -16,7 +16,7 @@ import socket
 import time
 from dataclasses import dataclass, field
 from typing import Any
-from urllib.parse import parse_qs, unquote, urlparse
+from urllib.parse import parse_qs, quote, unquote, urlparse
 
 import httpx
 from bs4 import BeautifulSoup
@@ -35,6 +35,10 @@ MAX_PAGE_BYTES = 1_300_000
 # fit inside the branch budget instead of starving them.
 DDG_PACKAGE_TIMEOUT = 3.0
 DDG_HTML_TIMEOUT = 4.0
+# How long to stop retrying DuckDuckGo after it answers with a bot challenge.
+DDG_COOLDOWN_SECONDS = 90.0
+# Total wall-clock budget for the whole search phase of one branch.
+SEARCH_BUDGET_SECONDS = 6.0
 
 _UA = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
@@ -47,6 +51,91 @@ _BASE_HEADERS = {
     "Accept-Language": "en-US,en;q=0.9",
     "Cache-Control": "no-cache",
 }
+
+# The planner appends these qualifiers to steer a general web index. They
+# are meaningless to a focused API, so the fallbacks retry without them.
+_QUERY_QUALIFIERS = (
+    "official release notes status",
+    "GitHub developer discussion workaround",
+    "developer discussion workaround",
+    "tail latency benchmark results",
+    "changelog fix details",
+    "independent analysis",
+)
+
+
+def _strip_query_qualifiers(query: str) -> str:
+    """Remove the planner's search-engine qualifiers from a query."""
+    cleaned = query
+    lowered = cleaned.lower()
+    for qualifier in _QUERY_QUALIFIERS:
+        index = lowered.find(qualifier.lower())
+        if index != -1:
+            cleaned = (cleaned[:index] + cleaned[index + len(qualifier) :]).strip()
+            lowered = cleaned.lower()
+    return " ".join(cleaned.split())
+
+
+# Words that carry no retrieval signal for a focused code/documentation index.
+_FOCUSED_NOISE = {
+    "fixed", "fix", "fixes", "status", "check", "checks", "checking", "find",
+    "search", "look", "tell", "please", "whether", "current", "currently",
+    "latest", "release", "releases", "released", "official", "developer",
+    "developers", "discussion", "workaround", "workarounds", "changelog",
+    "notes", "note", "results", "result", "issue", "issues", "bug", "bugs",
+    "still", "persists", "remain", "remains", "update", "updates", "version",
+    "versions", "compare", "comparison", "versus", "vs", "info", "information",
+    "does", "did", "not", "now", "then", "also", "about", "there", "here",
+    "leak", "memory", "leaks",
+    # Ordinary English stop words.
+    "the", "and", "our", "your", "this", "that", "with", "for", "from",
+    "have", "has", "was", "were", "are", "but", "can", "will", "one",
+    "out", "get", "use", "used", "using", "make", "made", "into", "over",
+    "under", "between", "than", "then", "them", "they", "his", "her",
+    "its", "own", "same", "each", "any", "all", "more", "most", "some",
+    "such", "only", "own", "too", "very", "just", "also", "how", "why",
+}
+
+# A file name is a great disambiguator for a general web index and pure noise
+# for a code index, where no repository is called `screen_capture.swift`.
+
+
+def _distinctive_terms(query: str, limit: int = 4) -> str:
+    """Reduce a query to the few terms a focused index will match on.
+
+    The planner builds search-engine queries — long, qualified, and natural
+    language. A code or Q&A index ANDs its terms, so a twelve-word query
+    matches nothing. Feeding those providers the distinctive nouns only is
+    the difference between "no results" and a usable fallback.
+    """
+    cleaned = _strip_query_qualifiers(query)
+    # Remove whole file names before tokenising, otherwise `screen_capture.swift`
+    # leaves behind a `screen_capture` fragment that no code index matches.
+    cleaned = re.sub(r"\b[\w-]+\.[A-Za-z0-9]{1,6}\b", " ", cleaned)
+    words = re.findall(r"[A-Za-z][A-Za-z0-9+#_-]{1,40}", cleaned)
+    kept: list[str] = []
+    seen: set[str] = set()
+    for word in words:
+        lowered = word.lower()
+        if lowered in _FOCUSED_NOISE or len(lowered) < 3:
+            continue
+        if word.isdigit():
+            continue
+        if lowered in seen:
+            continue
+        seen.add(lowered)
+        kept.append(word)
+    if not kept:
+        return cleaned[:120]
+    # Proper nouns and camelCase identifiers carry the most signal, so they
+    # are preferred over ordinary lowercase words.
+    def _weight(word: str) -> tuple[int, int, str]:
+        capitalised = 1 if word[:1].isupper() else 0
+        camel = 1 if re.search(r"[a-z][A-Z]", word) else 0
+        return (-(capitalised + camel), -len(word), word.lower())
+
+    kept.sort(key=_weight)
+    return " ".join(kept[:limit])
 
 
 @dataclass
@@ -70,14 +159,30 @@ class RetrievalResult:
     fetched_count: int = 0
 
 
+def _focused_query_candidates(query: str) -> list[str]:
+    """Query variants for a focused index, most specific first."""
+    candidates: list[str] = []
+    for candidate in (
+        _distinctive_terms(query),
+        _strip_query_qualifiers(query),
+        query,
+    ):
+        cleaned = " ".join(candidate.split())
+        if cleaned and cleaned not in candidates:
+            candidates.append(cleaned)
+    return candidates
+
+
 class ScraperPool:
     def __init__(self) -> None:
         self.tavily_key = (os.getenv("TAVILY_API_KEY") or "").strip()
         self.serper_key = (os.getenv("SERPER_API_KEY") or "").strip()
         timeout_ms = int(os.getenv("SEARCH_TIMEOUT_MS", "1800"))
         self.url_timeout = max(0.5, min(timeout_ms / 1000.0, 5.0))
+        self._duckduckgo_cooldown_until = 0.0
+        self._duckduckgo_challenged = False
         logger.info(
-            "search providers: tavily=%s serper=%s duckduckgo=true timeout=%.1fs",
+            "search providers: tavily=%s serper=%s duckduckgo=true github=true stackexchange=true wikipedia=true timeout=%.1fs",
             bool(self.tavily_key),
             bool(self.serper_key),
             self.url_timeout,
@@ -88,6 +193,9 @@ class ScraperPool:
             "tavily": bool(self.tavily_key),
             "serper": bool(self.serper_key),
             "duckduckgo_fallback": True,
+            "github_fallback": True,
+            "stackexchange_fallback": True,
+            "wikipedia_fallback": True,
         }
 
     async def search_and_scrape(
@@ -196,6 +304,7 @@ class ScraperPool:
         self, query: str
     ) -> tuple[list[SearchResult], str, list[str]]:
         errors: list[str] = []
+        deadline = time.monotonic() + SEARCH_BUDGET_SECONDS
         premium_tasks: list[tuple[str, asyncio.Task[list[SearchResult]]]] = []
         if self.tavily_key:
             premium_tasks.append(("tavily", asyncio.create_task(self._tavily(query))))
@@ -224,32 +333,79 @@ class ScraperPool:
                         task.cancel()
                 await asyncio.gather(*tasks, return_exceptions=True)
 
-        try:
-            results = await asyncio.wait_for(self._duckduckgo(query), timeout=9.0)
-            if results:
-                return results[:MAX_SEARCH_RESULTS], "duckduckgo", errors
-            errors.append("DuckDuckGo returned no results")
-        except asyncio.TimeoutError:
-            errors.append("DuckDuckGo timed out")
-        except Exception as exc:  # noqa: BLE001
-            errors.append(f"DuckDuckGo: {str(exc)[:240]}")
+        # DuckDuckGo is the zero-key default, but it answers a burst of
+        # requests with a `202` bot challenge. When that happens the rest of
+        # the branches skip it for a while instead of hammering it further.
+        if self._duckduckgo_cooldown_until > time.monotonic():
+            errors.append(
+                "DuckDuckGo is rate-limiting this client (bot challenge); using fallbacks"
+            )
+        else:
+            try:
+                results = await asyncio.wait_for(
+                    self._duckduckgo(query), timeout=max(0.5, deadline - time.monotonic())
+                )
+                if results:
+                    return results[:MAX_SEARCH_RESULTS], "duckduckgo", errors
+                errors.append("DuckDuckGo returned no results")
+            except asyncio.TimeoutError:
+                errors.append("DuckDuckGo timed out")
+            except Exception as exc:  # noqa: BLE001
+                errors.append(f"DuckDuckGo: {str(exc)[:240]}")
 
-        # One retry, but only against the cheap HTML endpoints. DuckDuckGo's
-        # bot challenge is frequently transient, and a single failed branch is
-        # enough to send the whole DAG down the self-healing path. Re-running
-        # the package here would blow the branch latency budget for very
-        # little extra yield.
-        await asyncio.sleep(0.3)
-        try:
-            results = await asyncio.wait_for(self._duckduckgo_html(query), timeout=6.0)
+            if self._duckduckgo_challenged:
+                self._duckduckgo_cooldown_until = time.monotonic() + DDG_COOLDOWN_SECONDS
+                self._duckduckgo_challenged = False
+                errors.append(
+                    f"DuckDuckGo returned a bot challenge; cooling down for "
+                    f"{DDG_COOLDOWN_SECONDS}s"
+                )
+
+            # One retry, but only against the cheap HTML endpoints. The bot
+            # challenge is frequently transient, and a single failed branch is
+            # enough to send the whole DAG down the self-healing path.
+            remaining = deadline - time.monotonic()
+            if remaining > 0.3:
+                await asyncio.sleep(0.25)
+                try:
+                    results = await asyncio.wait_for(
+                        self._duckduckgo_html(query), timeout=remaining
+                    )
+                    if results:
+                        logger.info("duckduckgo recovered on retry for %r", query[:70])
+                        return results[:MAX_SEARCH_RESULTS], "duckduckgo", errors
+                    errors.append("DuckDuckGo retry returned no results")
+                except asyncio.TimeoutError:
+                    errors.append("DuckDuckGo retry timed out")
+                except Exception as exc:  # noqa: BLE001
+                    errors.append(f"DuckDuckGo retry: {str(exc)[:240]}")
+
+        # Zero-key fallbacks. GitHub, Stack Exchange and Wikipedia are all
+        # keyless and all return real, citable content — so the pipeline never
+        # stalls on a single blocked provider. The whole chain is bounded so a
+        # branch can never blow the latency budget.
+        deadline = time.monotonic() + SEARCH_BUDGET_SECONDS
+        for name, coro in (
+            ("github", self._github(query)),
+            ("stackexchange", self._stackexchange(query)),
+            ("wikipedia", self._wikipedia(query)),
+        ):
+            remaining = deadline - time.monotonic()
+            if remaining <= 0.2:
+                errors.append("search budget exhausted before the fallbacks")
+                break
+            try:
+                results = await asyncio.wait_for(coro, timeout=min(5.0, remaining))
+            except asyncio.TimeoutError:
+                errors.append(f"{name} timed out")
+                continue
+            except Exception as exc:  # noqa: BLE001
+                errors.append(f"{name}: {str(exc)[:240]}")
+                continue
             if results:
-                logger.info("duckduckgo recovered on retry for %r", query[:70])
-                return results[:MAX_SEARCH_RESULTS], "duckduckgo", errors
-            errors.append("DuckDuckGo retry returned no results")
-        except asyncio.TimeoutError:
-            errors.append("DuckDuckGo retry timed out")
-        except Exception as exc:  # noqa: BLE001
-            errors.append(f"DuckDuckGo retry: {str(exc)[:240]}")
+                logger.info("search fallback %s returned %d results", name, len(results))
+                return results[:MAX_SEARCH_RESULTS], name, errors
+
         return [], "none", errors
 
     async def _tavily(self, query: str) -> list[SearchResult]:
@@ -308,11 +464,22 @@ class ScraperPool:
         return results
 
     async def _duckduckgo(self, query: str) -> list[SearchResult]:
-        """Try the maintained package, then the static HTML endpoints."""
-        package_results = await self._duckduckgo_package(query)
-        if package_results:
-            return package_results
-        return await self._duckduckgo_html(query)
+        """Query DuckDuckGo, cheapest endpoint first.
+
+        The HTML surfaces answer in well under a second, while the
+        `duckduckgo-search` package can take several seconds before it gives
+        up. Trying the cheap endpoints first means a bot challenge is detected
+        almost immediately instead of stalling the branch, and the package is
+        only used when the HTML surfaces come back empty.
+        """
+        html_results = await self._duckduckgo_html(query)
+        if html_results:
+            return html_results
+        if self._duckduckgo_challenged:
+            # The HTML surfaces were challenged, so the package — which talks to
+            # the same bot-protected endpoints — will be too.
+            return []
+        return await self._duckduckgo_package(query)
 
     async def _duckduckgo_package(self, query: str) -> list[SearchResult]:
         try:
@@ -380,6 +547,9 @@ class ScraperPool:
                 else:
                     response = await client.post(url, data=params)
                 if response.status_code != 200:
+                    if response.status_code in {202, 429, 503}:
+                        # 202 is DuckDuckGo's bot challenge, not a result page.
+                        self._duckduckgo_challenged = True
                     logger.warning(
                         "%s returned %s for %r", provider, response.status_code, params.get("q", "")[:60]
                     )
@@ -456,6 +626,160 @@ class ScraperPool:
             if target:
                 return unquote(target)
         return url
+
+    # ── Zero-key fallbacks ──────────────────────────────────────────────────
+
+    async def _stackexchange(self, query: str) -> list[SearchResult]:
+        """The public Stack Exchange API — keyless, and full of real answers.
+
+        The planner appends qualifiers like "official release notes status"
+        that never match a Stack Overflow question, so a too-specific query is
+        retried with the qualifier stripped.
+        """
+        candidates = _focused_query_candidates(query)
+
+        for candidate in candidates:
+            results = await self._stackexchange_query(candidate)
+            if results:
+                return results
+        return []
+
+    async def _stackexchange_query(self, query: str) -> list[SearchResult]:
+        params = {
+            "order": "desc",
+            "sort": "relevance",
+            "q": query[:180],
+            "site": "stackoverflow",
+            "pagesize": str(MAX_SEARCH_RESULTS),
+            "filter": "withbody",
+        }
+        try:
+            async with httpx.AsyncClient(
+                timeout=DDG_HTML_TIMEOUT, follow_redirects=True, headers=_BASE_HEADERS
+            ) as client:
+                response = await client.get(
+                    "https://api.stackexchange.com/2.3/search/advanced", params=params
+                )
+                if response.status_code != 200:
+                    logger.warning("stackexchange returned %s", response.status_code)
+                    return []
+                payload = response.json()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("stackexchange failed: %s", str(exc)[:200])
+            return []
+
+        results: list[SearchResult] = []
+        for item in payload.get("items", [])[:MAX_SEARCH_RESULTS]:
+            url = str(item.get("link", "")).strip()
+            if not url.startswith(("http://", "https://")):
+                continue
+            body = str(item.get("body", "") or "")
+            snippet = BeautifulSoup(body, "html.parser").get_text(" ", strip=True)
+            results.append(
+                SearchResult(
+                    title=str(item.get("title", "") or url)[:300],
+                    url=url,
+                    snippet=snippet[:3000],
+                    provider="stackexchange",
+                )
+            )
+        return results
+
+    async def _github(self, query: str) -> list[SearchResult]:
+        """GitHub's public search API — keyless, and full of real bug reports.
+
+        For a research engine aimed at developers this is the most useful
+        zero-key fallback: issues and pull requests are exactly the kind of
+        primary evidence the sieve ranks highest.
+        """
+        candidates = _focused_query_candidates(query)
+
+        for candidate in candidates:
+            params = {"q": candidate[:180], "per_page": str(MAX_SEARCH_RESULTS)}
+            try:
+                async with httpx.AsyncClient(
+                    timeout=DDG_HTML_TIMEOUT, follow_redirects=True, headers=_BASE_HEADERS
+                ) as client:
+                    response = await client.get(
+                        "https://api.github.com/search/issues",
+                        params=params,
+                        headers={
+                            "Accept": "application/vnd.github+json",
+                            "X-GitHub-Api-Version": "2022-11-28",
+                        },
+                    )
+                    if response.status_code != 200:
+                        logger.warning("github search returned %s", response.status_code)
+                        return []
+                    payload = response.json()
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("github search failed: %s", str(exc)[:200])
+                return []
+
+            results: list[SearchResult] = []
+            for item in payload.get("items", [])[:MAX_SEARCH_RESULTS]:
+                url = str(item.get("html_url", "")).strip()
+                if not url.startswith(("http://", "https://")):
+                    continue
+                body = str(item.get("body") or "")[:1200]
+                results.append(
+                    SearchResult(
+                        title=str(item.get("title", "") or url)[:300],
+                        url=url,
+                        snippet=body[:3000],
+                        provider="github",
+                    )
+                )
+            if results:
+                return results
+        return []
+
+    async def _wikipedia(self, query: str) -> list[SearchResult]:
+        """Wikipedia's keyless search API — reliable, and good for entities."""
+        candidates = _focused_query_candidates(query)
+
+        for candidate in candidates:
+            params = {
+                "action": "query",
+                "list": "search",
+                "srsearch": candidate[:180],
+                "format": "json",
+                "srlimit": str(MAX_SEARCH_RESULTS),
+                "srprop": "snippet",
+            }
+            try:
+                async with httpx.AsyncClient(
+                    timeout=DDG_HTML_TIMEOUT, follow_redirects=True, headers=_BASE_HEADERS
+                ) as client:
+                    response = await client.get(
+                        "https://en.wikipedia.org/w/api.php", params=params
+                    )
+                    if response.status_code != 200:
+                        return []
+                    payload = response.json()
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("wikipedia failed: %s", str(exc)[:200])
+                return []
+
+            results: list[SearchResult] = []
+            for item in payload.get("query", {}).get("search", [])[:MAX_SEARCH_RESULTS]:
+                title = str(item.get("title", "")).strip()
+                if not title:
+                    continue
+                snippet = BeautifulSoup(
+                    str(item.get("snippet", "") or ""), "html.parser"
+                ).get_text(" ", strip=True)
+                results.append(
+                    SearchResult(
+                        title=title[:300],
+                        url=f"https://en.wikipedia.org/wiki/{quote(title.replace(' ', '_'))}",
+                        snippet=snippet[:3000],
+                        provider="wikipedia",
+                    )
+                )
+            if results:
+                return results
+        return []
 
     # ── Page scraping ────────────────────────────────────────────────────────
 

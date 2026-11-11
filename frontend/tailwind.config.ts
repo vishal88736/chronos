@@ -42,6 +42,15 @@ const config: Config = {
           "Helvetica Neue",
           "sans-serif",
         ],
+        display: [
+          "Iowan Old Style",
+          "Palatino Linotype",
+          "Palatino",
+          "Book Antiqua",
+          "Georgia",
+          "ui-serif",
+          "serif",
+        ],
         mono: [
           "JetBrains Mono Variable",
           "JetBrains Mono",

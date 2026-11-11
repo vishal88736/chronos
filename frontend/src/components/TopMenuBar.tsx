@@ -7,12 +7,17 @@ import {
   CalendarClock,
   Coffee,
   Laptop,
+  PanelRightClose,
+  PanelRightOpen,
   PauseCircle,
+  Plus,
   Radio,
+  ShieldCheck,
   Zap,
 } from "lucide-react";
 import clsx from "clsx";
-import type { FocusLevel } from "@/types/chronos";
+import type { AmbientContext, FocusLevel } from "@/types/chronos";
+import AmbientSwitcher from "@/components/AmbientSwitcher";
 import ThemeToggle from "@/components/ThemeToggle";
 
 export type ConnectionState = "connecting" | "live" | "reconnecting" | "offline";
@@ -22,8 +27,17 @@ interface TopMenuBarProps {
   onFocusChange: (level: FocusLevel) => void;
   activePromises: number;
   queuedPromises: number;
+  autoVerifiedPromises: number;
   connection: ConnectionState;
   isChangingFocus: boolean;
+  activeApp: string;
+  onActiveAppChange: (value: string) => void;
+  ambient: AmbientContext | null;
+  ambientSupported: boolean;
+  onToggleInspector: () => void;
+  showInspector: boolean;
+  onNewConversation: () => void;
+  hasMessages: boolean;
 }
 
 const FOCUS_OPTIONS: Array<{
@@ -39,7 +53,7 @@ const FOCUS_OPTIONS: Array<{
     label: "Deep Coding",
     icon: Brain,
     activeClass:
-      "bg-accent/[0.16] text-accent-fg ring-1 ring-inset ring-accent/30 shadow-[0_0_22px_rgba(99,102,241,0.13)]",
+      "bg-accent/[0.16] text-accent-fg ring-1 ring-inset ring-accent/30 shadow-[0_0_22px_rgba(16,185,129,0.13)]",
     iconClass: "text-accent-fg",
     dotClass: "bg-accent",
   },
@@ -103,43 +117,58 @@ export default function TopMenuBar({
   onFocusChange,
   activePromises,
   queuedPromises,
+  autoVerifiedPromises,
   connection,
   isChangingFocus,
+  activeApp,
+  onActiveAppChange,
+  ambient,
+  ambientSupported,
+  onToggleInspector,
+  showInspector,
+  onNewConversation,
+  hasMessages,
 }: TopMenuBarProps) {
   const connectionMeta = CONNECTION_META[connection];
 
   return (
-    <header className="relative z-40 flex h-12 shrink-0 items-center border-b border-hairline bg-panel/90 px-4 backdrop-blur-2xl">
-      <div className="flex min-w-0 flex-1 items-center gap-4">
+    <header className="relative z-40 flex h-12 shrink-0 items-center gap-3 border-b border-hairline bg-panel/90 px-3 backdrop-blur-2xl sm:px-4">
+      <div className="flex min-w-0 flex-1 items-center gap-3">
         <div className="no-drag flex shrink-0 items-center gap-[7px]" aria-hidden="true">
           <span className="h-[11px] w-[11px] rounded-full border border-[#ff5f57]/35 bg-[#ff5f57] shadow-[inset_0_0_2px_rgba(0,0,0,0.35)]" />
           <span className="h-[11px] w-[11px] rounded-full border border-[#febc2e]/35 bg-[#febc2e] shadow-[inset_0_0_2px_rgba(0,0,0,0.35)]" />
           <span className="h-[11px] w-[11px] rounded-full border border-[#28c840]/35 bg-[#28c840] shadow-[inset_0_0_2px_rgba(0,0,0,0.35)]" />
         </div>
 
-        <div className="h-4 w-px bg-tint/[0.08]" aria-hidden="true" />
+        <div className="hidden h-4 w-px bg-tint/[0.08] sm:block" aria-hidden="true" />
 
         <div className="flex min-w-0 items-center gap-2.5">
-          <div className="relative flex h-6 w-6 shrink-0 items-center justify-center rounded-[7px] border border-tint/10 bg-gradient-to-br from-accent/[0.16] to-accent/[0.04] shadow-[inset_0_1px_0_rgba(255,255,255,0.08),0_2px_8px_rgba(0,0,0,0.25)]">
+          <div className="relative flex h-6 w-6 shrink-0 items-center justify-center rounded-[7px] border border-tint/10 bg-gradient-to-br from-accent/[0.18] to-accent/[0.04] shadow-[inset_0_1px_0_rgba(255,255,255,0.08),0_2px_8px_rgba(0,0,0,0.25)]">
             <Activity size={12} strokeWidth={2.2} className="text-accent-fg" />
             <span className="absolute -right-0.5 -top-0.5 h-1.5 w-1.5 rounded-full border border-panel bg-healthy" />
           </div>
-          <div className="flex min-w-0 items-baseline gap-1.5 whitespace-nowrap">
+          <div className="hidden min-w-0 items-baseline gap-1.5 whitespace-nowrap sm:flex">
             <span className="text-[13px] font-semibold tracking-[-0.015em] text-ink-strong">
               minimi
             </span>
             <span className="text-[12px] text-faint">//</span>
-            <span className="hidden text-[12px] font-medium uppercase tracking-[0.16em] text-muted sm:inline">
+            <span className="text-[12px] font-medium uppercase tracking-[0.16em] text-muted">
               Chronos Engine
-            </span>
-            <span className="sm:hidden text-[12px] font-medium uppercase tracking-[0.16em] text-muted">
-              Chronos
             </span>
           </div>
         </div>
-      </div>
 
-      <div className="flex shrink-0 items-center justify-center px-3">
+        <div className="hidden min-w-0 md:block">
+          <AmbientSwitcher
+            value={activeApp}
+            onChange={onActiveAppChange}
+            detectedApp={ambient?.app}
+            detectedTitle={ambient?.title}
+            supported={ambientSupported}
+          />
+        </div>
+      </div>
+      <div className="flex shrink-0 items-center justify-center px-1">
         <div
           className="flex items-center gap-0.5 rounded-[10px] border border-tint/[0.075] bg-panel/90 p-[3px] shadow-[inset_0_1px_1px_rgba(0,0,0,0.35),0_1px_0_rgba(255,255,255,0.03)]"
           role="group"
@@ -173,7 +202,7 @@ export default function TopMenuBar({
                   )}
                 />
                 <span className="hidden lg:inline">{option.label}</span>
-                <span className="font-mono text-[11px] tabular-nums tracking-tight opacity-50 lg:inline">
+                <span className="hidden font-mono text-[11px] tabular-nums tracking-tight opacity-50 lg:inline">
                   {option.value}
                 </span>
               </button>
@@ -183,7 +212,31 @@ export default function TopMenuBar({
       </div>
 
       <div className="flex flex-1 items-center justify-end gap-2">
+        <div className="md:hidden">
+          <AmbientSwitcher
+            value={activeApp}
+            onChange={onActiveAppChange}
+            detectedApp={ambient?.app}
+            detectedTitle={ambient?.title}
+            supported={ambientSupported}
+            align="right"
+            compact
+          />
+        </div>
+
         <ThemeToggle />
+
+        {hasMessages ? (
+          <button
+            type="button"
+            onClick={onNewConversation}
+            title="Start a new conversation"
+            aria-label="Start a new conversation"
+            className="flex h-7 w-7 items-center justify-center rounded-full border border-tint/[0.075] bg-tint/[0.03] text-muted transition-colors hover:border-accent/30 hover:text-accent-fg"
+          >
+            <Plus size={13} strokeWidth={2.2} />
+          </button>
+        ) : null}
 
         <div
           className={clsx(
@@ -198,7 +251,7 @@ export default function TopMenuBar({
         </div>
 
         <div
-          className="flex h-7 items-center gap-1.5 rounded-full border border-tint/[0.075] bg-tint/[0.03] px-2.5 text-[12px] text-ink shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]"
+          className="flex h-7 items-center gap-1.5 rounded-full border border-tint/[0.075] bg-tint/[0.03] px-2 text-[12px] text-ink shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]"
           title={`${activePromises} active caught promise${activePromises === 1 ? "" : "s"}`}
         >
           <Bell size={11.5} strokeWidth={2} className="text-accent-fg" />
@@ -222,6 +275,35 @@ export default function TopMenuBar({
             </span>
           </div>
         ) : null}
+
+        {autoVerifiedPromises > 0 ? (
+          <div
+            className="flex h-7 items-center gap-1.5 rounded-full border border-healthy/25 bg-healthy/[0.09] px-2.5 text-[12px] text-healthy-fg/90"
+            title={`${autoVerifiedPromises} promise${autoVerifiedPromises === 1 ? "" : "s"} auto-verified — already fulfilled, never interrupted`}
+          >
+            <ShieldCheck size={11.5} strokeWidth={2} className="text-healthy" />
+            <span className="font-mono text-[12px] tabular-nums">{autoVerifiedPromises}</span>
+            <span className="hidden text-[11px] uppercase tracking-[0.08em] opacity-75 xl:inline">
+              Verified
+            </span>
+          </div>
+        ) : null}
+
+        <button
+          type="button"
+          onClick={onToggleInspector}
+          title={showInspector ? "Hide the glass-box inspector" : "Show the glass-box inspector"}
+          aria-label={showInspector ? "Hide inspector" : "Show inspector"}
+          aria-pressed={showInspector}
+          className={clsx(
+            "flex h-7 w-7 items-center justify-center rounded-full border transition-colors",
+            showInspector
+              ? "border-accent/30 bg-accent/[0.1] text-accent-fg"
+              : "border-tint/[0.075] bg-tint/[0.03] text-muted hover:text-ink",
+          )}
+        >
+          {showInspector ? <PanelRightClose size={13} /> : <PanelRightOpen size={13} />}
+        </button>
 
         <div
           className="ml-0.5 hidden h-7 w-7 items-center justify-center rounded-full border border-accent/20 bg-accent/[0.09] sm:flex"

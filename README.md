@@ -216,26 +216,35 @@ Promise states: `WATCHING → QUEUED_QUIET ↔ NUDGED → RESOLVED`.
 ├── backend
 │   ├── .env.example
 │   ├── main.py                  # FastAPI app, SSE, orchestration, evaluator APIs
-│   ├── db.py                    # aiosqlite schema, seed data, CRUD
+│   ├── db.py                    # aiosqlite schema, seed data, CRUD, activity log
 │   ├── schemas.py               # strict Pydantic v2 contracts
 │   ├── llm_client.py            # async OpenAI/Groq-compatible JSON + stream wrapper
 │   ├── events.py                # SSE broker and process-local focus state
 │   ├── requirements.txt
+│   ├── tests
+│   │   ├── test_engine.py       # 63 unit-level checks over the engine internals
+│   │   └── test_api.py          # 59 HTTP-surface checks over the live app
 │   └── engine
 │       ├── hydrator.py          # local entity hydration + memory writeback
-│       ├── dag_planner.py       # speculative prefetch + DAG planning/rewrite
-│       ├── scraper_pool.py      # provider race, hedged URL fetch, TTL cache
-│       ├── context_sieve.py     # chunking, BM25, self-healing decision
+│       ├── dag_planner.py       # prefetch, DAG planning, wave 2, branch rewrite
+│       ├── scraper_pool.py      # provider race, hedged fetch, TTL cache, fallbacks
+│       ├── context_sieve.py     # chunking, BM25, authority/freshness reranking
 │       ├── synthesizer.py       # cited streaming + contradiction audit
-│       └── promise_daemon.py    # commitment extractor, DOM watcher, urgency gate
+│       ├── promise_daemon.py    # commitment extractor, watcher, gate, auto-verify
+│       ├── ambient.py           # OS window + clipboard sensor
+│       └── trace.py             # flight-recorder trace store
 └── frontend
     ├── package.json
     ├── src/app                  # layout, page-level SSE controller, design tokens
+    ├── src/lib/stream.ts        # EventSource streaming with a fetch fallback
     ├── src/components
-    │   ├── TopMenuBar.tsx       # traffic lights, focus switcher, promise counter
+    │   ├── TopMenuBar.tsx       # traffic lights, focus switcher, ambient switcher
+    │   ├── AmbientSwitcher.tsx  # evaluator-facing OS context switcher
     │   ├── NudgePill.tsx        # pre-staged artifact, copy/resolve/dismiss
+    │   ├── AutoVerifiedBanner.tsx # the "stayed quiet" toast
+    │   ├── LatencyRibbon.tsx    # stage budget + trace export
     │   ├── ChatPane.tsx         # streaming chat, citation pills, discrepancies
-    │   └── InspectorPane.tsx    # DAG, BM25 funnel, promise watcher, simulator
+    │   └── InspectorPane.tsx    # waves, authority sieve, promise watcher, simulator
     └── src/types/chronos.ts     # mirrors backend schemas
 ```
 
@@ -347,18 +356,108 @@ To test the real background DOM watcher (not the simulator):
 
 ---
 
+## The five capability layers
+
+Each of these is observable from the UI and covered by the test suites in
+`backend/tests/`.
+
+### 1. Ambient OS window & clipboard sensor
+
+`backend/engine/ambient.py` reads the frontmost application, its window title,
+the current editor selection and the clipboard — entirely locally.
+
+- macOS: `osascript` (System Events) for the window and `pbpaste` for the clipboard.
+- Linux: `xdotool`/`xprop` for the window and `wl-paste`/`xclip`/`xsel` for the clipboard.
+- Every probe is individually guarded with a 1.2s timeout, and binary clipboard
+  payloads are rejected rather than treated as text.
+
+The **Ambient OS context** switcher in the top bar lets an evaluator simulate
+any context on any machine (VS Code / Slack / Terminal / Browser / auto-detect).
+Only distinctive terms — the open file name, the channel, the identifiers in the
+selection — are folded into the *search queries*. The private context itself is
+never serialised into a request a search provider can see.
+
+### 2. Multi-wave dependent DAG execution
+
+Wave 1 runs the planner's branches in parallel. Once wave 1 has returned
+evidence, the planner builds a **wave 2** node whose query interpolates what
+wave 1 actually found — the dominant version number, the subject nouns — so the
+follow-up could not have been written before wave 1 ran. The wave 2 node
+carries `wave: 2` and `depends_on: ["q1", "q2"]`, and is drawn indented under
+wave 1 in the inspector.
+
+### 3. Authority + freshness composite reranker
+
+BM25 alone treats an SEO farm the same as the vendor's own documentation. Every
+chunk is scored with:
+
+```text
+composite = 0.60 · normalised BM25 + 0.25 · domain authority + 0.15 · freshness
+```
+
+- **Domain authority** — 0.95 for primary engineering sources (`github.com`,
+  `developer.apple.com`, `python.org`, `fastapi.tiangolo.com`, …), 0.75 for
+  institutional domains (`.edu`, `.org`, `.gov`), 0.35 for aggregators
+  (`medium.com`, `dev.to`, `stackoverflow.com`), 0.50 otherwise.
+- **Freshness** — rises with time-sensitive language and concrete version
+  strings, falls with `deprecated` / `archived` / `end-of-life` phrasing.
+
+The evidence budget is also diversity-capped: at most 2 chunks per URL and 3
+per host, so one long page cannot fill the whole context.
+
+### 4. Bi-directional promise auto-verification
+
+Nagging someone about a task they already finished is the worst failure mode a
+reminder engine has. Before any nudge is released, Chronos checks the
+**outbound activity log** — a local table of signals such as a resolved
+promise, a pushed commit or a recorded fulfilment.
+
+If the log proves the action was already taken, the promise is closed as
+`AUTO_VERIFIED_SILENT`, a `verification_note` explains why, **no nudge is
+published**, and the UI shows a calm “Stayed quiet · auto-verified” banner
+instead of an interruption.
+
+The **You already did it** button in the promise daemon card runs exactly this
+path.
+
+### 5. Stage-by-stage latency breakdown & trace export
+
+The **Stage latency** card at the top of the inspector shows the millisecond
+budget for each stage of the last turn:
+
+```text
+HYDRATION 2MS · PLAN 1MS · SCRAPE 4886MS · SIEVE 3MS · SYNTH 493MS
+TTFT 4942MS · TOTAL 5435MS
+```
+
+The bar is proportional, so the slowest stage is visible at a glance. **Export
+trace** downloads the flight-recorder JSON: the ambient context, the planned
+DAG, every branch with its provider and latency, the surviving evidence, the
+stage timings and the ordered event log.
+
+---
+
 ## API surface
 
 | Method | Path | Purpose |
 |---|---|---|
 | `POST` | `/api/speculate` | 400ms-debounced entity resolution and speculative cache warming |
 | `POST` | `/api/chat/stream` | SSE search + planning + scraping + synthesis pipeline |
+| `GET` | `/api/chat/stream` | Same turn over query params, for the browser's native `EventSource` |
 | `GET` | `/api/nudges/stream` | Long-lived SSE firehose for nudge/promise events |
+| `GET` | `/api/ambient` | Current OS window / clipboard context read locally |
 | `POST` | `/api/focus` | Change focus state and flush eligible `QUEUED_QUIET` promises |
 | `POST` | `/api/simulate-mutation` | Deterministic page-change simulation and gate evaluation |
 | `POST` | `/api/promises/{id}/resolve` | Mark a caught promise resolved |
 | `GET` | `/api/state` | Full local memory graph + promise vault + focus state |
+| `GET` | `/api/activity` | The outbound activity log used for auto-verification |
+| `GET` | `/api/trace/export` | Flight-recorder JSON for the recent turns |
+| `GET` | `/api/trace/recent` | Compact trace summaries |
 | `GET` | `/api/health` | Engine, provider, and subscription health |
+
+Every JSON key is `snake_case` on both sides of the wire — the Python
+contracts in `backend/schemas.py` and the TypeScript interfaces in
+`frontend/src/types/chronos.ts` are 1:1.
 
 ### Chat SSE sequence
 
@@ -366,22 +465,27 @@ To test the real background DOM watcher (not the simulator):
 HYDRATION
 DAG_PLAN
 NODE_UPDATE (SCRAPING / CACHED / HEALING / DONE / FAILED) ...
-NODE_ADDED (only when self-healing)
+NODE_ADDED (self-heal branch, or the wave 2 dependent node)
 SIEVE_METRICS
 TOKEN ... TOKEN
 CONTRADICTIONS
 PROMISE_CAUGHT (when a commitment exists)
-DONE
+DONE (carries the final stage_timings_ms)
 ```
 
 Both SSE endpoints send JSON inside `data:` lines. Chat is header-flushed with
 `Cache-Control: no-cache`, `Connection: keep-alive`, and `X-Accel-Buffering: no`.
+
+The frontend uses `GET /api/chat/stream` so the browser's own `EventSource`
+parser handles the framing — no hand-rolled buffer splitter to get wrong. A
+`fetch` reader is kept as a fallback for environments without `EventSource`.
 
 ### Nudge SSE sequence
 
 ```text
 HELLO
 PROMISE_UPDATED
+AUTO_VERIFIED_SILENT (when the promise was already fulfilled)
 NUDGE
 ...
 : keep-alive (every 15s)
@@ -417,7 +521,16 @@ Search selection:
 
 1. Tavily and Serper are raced when both keys exist.
 2. The first non-empty result wins; other premium calls are cancelled.
-3. DuckDuckGo package, then direct DuckDuckGo HTML, then snippet fallback.
+3. DuckDuckGo's cheap HTML surfaces are tried first (they answer in well under
+   a second), then the `duckduckgo-search` package.
+4. When DuckDuckGo answers with a `202` bot challenge, the client cools down
+   for 90 seconds instead of hammering it, and the branch moves on.
+5. Keyless fallbacks: the **GitHub** search API, the **Stack Exchange** API and
+   the **Wikipedia** API. Each is queried with the distinctive terms only,
+   because those indexes AND their terms. All three return real, citable
+   content — the pipeline never stalls on a single blocked provider.
+6. The whole search phase of a branch is bounded by `SEARCH_BUDGET_SECONDS`
+   (6s), so one slow provider can never blow the turn's latency budget.
 
 ### No-key operation
 
@@ -435,23 +548,26 @@ For the densest answer and full semantic contradiction detection, configure a fa
 
 ## Design system
 
-Native macOS dark workspace with Linear/Raycast-style precision telemetry.
+A deep-ink workspace with an emerald/teal signal colour, airy surfaces, soft
+edges and a dotted grid that recedes into the background — the "find what you
+need" search aesthetic, applied to a dense telemetry tool.
 
 | Token | Value |
 |---|---|
-| Canvas | `#090A0F` |
-| Elevated surface | `#11131A` |
-| Inspector panel | `#0C0E14` |
-| Glass popover | `rgba(22, 25, 36, 0.78)` + 16px backdrop blur |
+| Canvas | `#080C0C` |
+| Elevated surface | `#0F1515` |
+| Inspector panel | `#0C1212` |
+| Glass popover | `rgba(17, 25, 24, 0.78)` + 16px backdrop blur |
 | Hairline | `1px solid rgba(255, 255, 255, 0.08)` |
-| Accent / primary | `#6366F1` |
-| Cache / fast hit | `#06B6D4` |
+| Accent / primary | `#10B981` |
+| Cache / fast hit | `#2DD4BF` |
 | Self-healing / warning | `#F59E0B` |
 | Healthy / resolved | `#10B981` |
 | Contradiction / error | `#F43F5E` |
 
-Typography uses self-hosted Inter Variable for UI prose and JetBrains Mono for latency badges,
-token metrics, DAG IDs, and promise calculations. Every animation honours
+Typography uses self-hosted Inter Variable for UI prose, JetBrains Mono for
+latency badges, token metrics, DAG IDs, and promise calculations, and a humanist
+serif stack for the hero display type. Every animation honours
 `prefers-reduced-motion`.
 
 ---
@@ -463,14 +579,20 @@ memory_entities(key PRIMARY KEY, value, category, updated_at)
 epistemic_cache(query_hash PRIMARY KEY, query_text, volatility, chunks_json, created_at, ttl_seconds)
 caught_promises(id PRIMARY KEY, actor, recipient, promised_action, trigger_condition,
                 watch_url, last_dom_hash, priority, time_sensitivity, status,
-                draft_artifact, trigger_summary, created_at)
+                draft_artifact, trigger_summary, created_at,
+                verification_note, urgency_score)
+outbound_activity_log(id PRIMARY KEY, summary, kind, created_at)
 ```
 
 - STATIC TTL: **86,400s**
 - VOLATILE TTL: **300s**
-- Cache keys: lowercase alphanumeric normalization + SHA-256
+- Cache keys: lowercase alphanumeric normalization + SHA-256, **including the
+  volatility** — a day-lived STATIC entry can never be served to a query that
+  explicitly asked for live data
+- Expired cache rows are purged on startup and by the periodic sweep
 - SQLite: WAL mode, short-lived async connections, 5s busy timeout
 - Promise watcher state: persisted hash + in-memory previous text for semantic diffs
+- The outbound activity log is the evidence base for auto-verification
 
 ### Reset evaluator state
 
@@ -483,6 +605,13 @@ rm backend/chronos.db
 
 ## Verification performed
 
+- **122 automated checks pass**: `backend/.venv/bin/python -m tests.test_engine`
+  (63 checks over the cache, sieve, planner, LLM helpers, promise gate, ambient
+  sensor and auto-verification) and
+  `backend/.venv/bin/python -m tests.test_api` (59 checks over the live HTTP
+  surface, including the SSE event order, the GET `EventSource` endpoint, the
+  ambient endpoint, the auto-verification simulation and the nudge-stream
+  subscription cleanup).
 - Backend modules compile under Python 3.12 with all pinned dependencies installed.
 - Next.js production build and strict TypeScript check pass.
 - Live DuckDuckGo/HTML retrieval, BM25 scoring, caching, and streamed SSE exercised end-to-end.
@@ -493,6 +622,9 @@ rm backend/chronos.db
 - Background watcher mutation → semantic diff → action artifact → queue → focus-release → nudge
   event verified against a changing local page.
 - Zero-LLM fallback, self-healing retry branch, and deterministic simulator verified without keys.
+- Multi-wave execution, the authority/freshness composite, the ambient sensor, the stage latency
+  ribbon and the trace export verified through a headless Chromium session against the live
+  engine.
 
 ---
 
@@ -501,13 +633,18 @@ rm backend/chronos.db
 - Some JavaScript-heavy documentation pages expose little text to a 1.8s scraper. Chronos then
   uses the search snippet and marks the branch for healing if confidence is still low; this is
   visible rather than hidden.
-- DuckDuckGo may rate-limit a network. Add Tavily or Serper keys for production-grade search.
+- DuckDuckGo rate-limits aggressively and answers a burst of requests with a `202` bot challenge.
+  Chronos detects the challenge, cools down for 90 seconds and falls through to the keyless
+  GitHub / Stack Exchange / Wikipedia APIs. Add Tavily or Serper keys for production-grade search.
 - A promise can only be watched after at least one usable source URL has been retrieved. The
   simulator creates a safe seeded demo promise when the vault is empty.
 - The local memory graph is only sent to the configured LLM provider for planning and writeback.
-  It is never injected into a web-search query.
+  It is never injected into a web-search query. The ambient OS sensor folds only distinctive
+  terms (a file name, a channel, an identifier) into a *query*, never the private context itself.
 - All live navigation outputs are treated as untrusted data in synthesis prompts; source text is
   never executed.
+- When every provider is blocked the pipeline still completes: it reports honestly that no
+  evidence was retrieved and preserves the full failure trace, rather than inventing citations.
 
 ## License
 

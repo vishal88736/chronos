@@ -48,12 +48,17 @@ export default function NudgePill({ nudge, onDismiss, onResolve }: NudgePillProp
   const [resolving, setResolving] = useState(false);
   const [copyError, setCopyError] = useState(false);
 
+  // Urgency is a *severity* scale, so it must not read as "the more urgent it
+  // is, the greener it gets". Low urgency stays muted, mid urgency is the
+  // accent, and only a genuinely urgent nudge escalates to amber.
   const urgencyClass =
     nudge.urgency >= 4
       ? "border-healing/25 bg-healing/[0.11] text-healing-fg"
       : nudge.urgency >= 3
         ? "border-cached/25 bg-cached/[0.1] text-cached-fg"
-        : "border-accent/25 bg-accent/[0.12] text-accent-fg";
+        : nudge.urgency >= 2.5
+          ? "border-accent/25 bg-accent/[0.12] text-accent-fg"
+          : "border-tint/[0.1] bg-tint/[0.035] text-muted";
 
   async function handleCopyResolve() {
     if (!nudge.draft_artifact || resolving) return;
@@ -78,10 +83,10 @@ export default function NudgePill({ nudge, onDismiss, onResolve }: NudgePillProp
       <div className="pointer-events-none absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-amber-300/45 to-transparent" />
       <div className="pointer-events-none absolute -left-10 -top-14 h-32 w-32 rounded-full bg-healing/[0.06] blur-3xl" />
 
-      <div className="relative px-4 pb-3 pt-3.5">
+      <div className="relative px-4 pb-2.5 pt-2.5">
         <div className="flex items-start gap-3">
-          <div className="relative mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-[10px] border border-healing/20 bg-healing/[0.09] text-healing-fg shadow-[inset_0_1px_0_rgba(255,255,255,0.07)]">
-            <BellRing size={15} strokeWidth={2} />
+          <div className="relative mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-[9px] border border-healing/20 bg-healing/[0.09] text-healing-fg shadow-[inset_0_1px_0_rgba(255,255,255,0.07)]">
+            <BellRing size={14} strokeWidth={2} />
             <span className="absolute -right-0.5 -top-0.5 h-2 w-2 rounded-full border-2 border-surface bg-healing shadow-[0_0_9px_rgba(245,158,11,0.7)]" />
           </div>
 
@@ -91,7 +96,7 @@ export default function NudgePill({ nudge, onDismiss, onResolve }: NudgePillProp
                 Caught promise ready
               </span>
               <span className="h-[3px] w-[3px] rounded-full bg-faint" aria-hidden="true" />
-              <span className="flex items-center gap-1 text-[11.5px] text-muted">
+              <span className="hidden items-center gap-1 text-[11.5px] text-muted sm:flex">
                 <Clock3 size={9.5} />
                 focus gate passed
               </span>
@@ -106,11 +111,11 @@ export default function NudgePill({ nudge, onDismiss, onResolve }: NudgePillProp
               </span>
             </div>
 
-            <p className="mt-2 line-clamp-3 text-[13.5px] font-medium leading-[1.5] tracking-[-0.01em] text-ink-strong">
+            <p className="mt-1.5 line-clamp-2 text-[13.5px] font-medium leading-[1.5] tracking-[-0.01em] text-ink-strong">
               {nudge.trigger_summary}
             </p>
 
-            <div className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-1 text-[12px] text-muted">
+            <div className="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-[12px] text-muted">
               <span className="text-muted">
                 {nudge.recipient}
                 <span className="mx-1.5 text-faint">·</span>
@@ -133,12 +138,12 @@ export default function NudgePill({ nudge, onDismiss, onResolve }: NudgePillProp
           </button>
         </div>
 
-        <div className="mt-3 rounded-[11px] border border-tint/[0.075] bg-shade/20">
+        <div className="mt-2.5 rounded-[11px] border border-tint/[0.075] bg-shade/20">
           <button
             type="button"
             onClick={() => setExpanded((value) => !value)}
             aria-expanded={expanded}
-            className="flex w-full items-center gap-2 rounded-[11px] px-3 py-2 text-left transition-colors hover:bg-tint/[0.025]"
+            className="flex w-full items-center gap-2 rounded-[11px] px-3 py-1.5 text-left transition-colors hover:bg-tint/[0.025]"
           >
             <Sparkles size={11.5} className="text-accent-fg" />
             <span className="text-[12px] font-medium text-ink">
@@ -166,7 +171,7 @@ export default function NudgePill({ nudge, onDismiss, onResolve }: NudgePillProp
           ) : null}
         </div>
 
-        <div className="mt-3 flex items-center gap-2">
+        <div className="mt-2.5 flex items-center gap-2">
           <button
             type="button"
             onClick={handleCopyResolve}
@@ -186,11 +191,6 @@ export default function NudgePill({ nudge, onDismiss, onResolve }: NudgePillProp
                 ? "Copied — resolving"
                 : "Copy draft & resolve"}
           </button>
-          {nudge.draft_artifact ? (
-            <span className="font-mono text-[11px] uppercase tracking-[0.1em] text-faint">
-              clipboard ready
-            </span>
-          ) : null}
           <button
             type="button"
             onClick={onDismiss}

@@ -26,6 +26,7 @@ class PromiseStatus(str, Enum):
     WATCHING = "WATCHING"
     QUEUED_QUIET = "QUEUED_QUIET"
     NUDGED = "NUDGED"
+    AUTO_VERIFIED_SILENT = "AUTO_VERIFIED_SILENT"
     RESOLVED = "RESOLVED"
 
 
@@ -75,6 +76,8 @@ class DAGNode(StrictModel):
     depends_on: list[str] = Field(default_factory=list)
     volatility: Volatility = Volatility.VOLATILE
     retry_of: str | None = None
+    # Wave 1 nodes are independent; wave 2 nodes depend on wave 1 findings.
+    wave: int = Field(default=1, ge=1, le=2)
 
     @field_validator("depends_on")
     @classmethod
@@ -134,6 +137,18 @@ class RetryPlan(StrictModel):
 # ── Retrieval / sieve ─────────────────────────────────────────────────────────
 
 
+class StageTimings(StrictModel):
+    """Millisecond budget for every stage of one turn."""
+
+    hydration: int = 0
+    dag_plan: int = 0
+    scrape: int = 0
+    sieve: int = 0
+    synthesis: int = 0
+    ttft: int = 0
+    total: int = 0
+
+
 class SourceChunk(StrictModel):
     id: str
     node_id: str
@@ -142,6 +157,11 @@ class SourceChunk(StrictModel):
     text: str
     bm25_score: float = 0.0
     token_count: int = 0
+    domain: str = ""
+    authority_score: float = 0.0
+    freshness_score: float = 0.0
+    composite_score: float = 0.0
+    wave: int = 1
 
 
 class SieveMetrics(StrictModel):
@@ -153,6 +173,8 @@ class SieveMetrics(StrictModel):
     selected_chunks: int
     total_scraped_words: int
     sources: list[SourceChunk]
+    peak_composite_score: float = 0.0
+    stage_timings_ms: StageTimings = Field(default_factory=StageTimings)
 
 
 class NodeExecutionResult(StrictModel):
@@ -191,6 +213,28 @@ class CaughtPromise(StrictModel):
     draft_artifact: str | None = None
     trigger_summary: str | None = None
     created_at: int
+    urgency_score: float = 0.0
+    verification_note: str | None = None
+
+
+class ActivityLogEntry(StrictModel):
+    """One outbound signal that may prove a promise was already fulfilled."""
+
+    id: str
+    summary: str
+    created_at: int
+    kind: str = "generic"
+
+
+class AmbientContext(StrictModel):
+    """The user's current OS window / clipboard context, if the host exposes it."""
+
+    app: str = ""
+    title: str = ""
+    selection: str = ""
+    clipboard: str = ""
+    source: str = "none"
+    available: bool = False
 
 
 class NudgePayload(StrictModel):
@@ -224,6 +268,7 @@ def _validate_focus(value: int) -> int:
 
 class SpeculateRequest(StrictModel):
     partial_text: str = Field(min_length=1, max_length=4000)
+    active_app: str | None = Field(default=None, max_length=400)
 
     @field_validator("partial_text")
     @classmethod
@@ -240,11 +285,13 @@ class SpeculateResponse(StrictModel):
     saved_ms: int
     status: Literal["WARMED", "WARMING", "IDLE"]
     speculative_query: str | None = None
+    active_app: AmbientContext | None = None
 
 
 class ChatRequest(StrictModel):
     message: str = Field(min_length=1, max_length=8000)
     focus_level: int = 2
+    active_app: str | None = Field(default=None, max_length=400)
 
     @field_validator("message")
     @classmethod
@@ -277,6 +324,9 @@ class FocusResponse(StrictModel):
 class SimulateMutationRequest(StrictModel):
     promise_id: str | None = None
     focus_level: int | None = None
+    # When true the simulator also records an outbound activity entry, which
+    # lets the auto-verifier prove the promise was already fulfilled.
+    already_completed: bool = False
 
     @field_validator("focus_level")
     @classmethod
@@ -293,6 +343,8 @@ class SimulateMutationResponse(StrictModel):
     focus_level: int
     nudge: NudgePayload | None
     message: str
+    auto_verified: bool = False
+    verification_note: str | None = None
 
 
 class ResolveResponse(StrictModel):
@@ -308,6 +360,8 @@ class StateResponse(StrictModel):
     active_promises: int
     queued_promises: int
     providers: dict[str, bool]
+    activity_log: list[ActivityLogEntry] = Field(default_factory=list)
+    auto_verified: int = 0
 
 
 # ── SSE event envelopes ───────────────────────────────────────────────────────
@@ -320,6 +374,7 @@ class HydrationEvent(StrictModel):
     pronouns_resolved: list[str] = Field(default_factory=list)
     speculative_hit: bool = False
     latency_ms: int = 0
+    active_app: AmbientContext | None = None
 
 
 class DAGPlanEvent(StrictModel):
@@ -337,6 +392,7 @@ class NodeUpdateEvent(StrictModel):
     chunks_found: int = 0
     cached: bool = False
     detail: str | None = None
+    wave: int = 1
 
 
 class NodeAddedEvent(StrictModel):
@@ -352,6 +408,8 @@ class SieveMetricsEvent(StrictModel):
     compression_pct: float
     peak_bm25: float
     sources: list[SourceChunk]
+    peak_composite_score: float = 0.0
+    stage_timings_ms: StageTimings = Field(default_factory=StageTimings)
 
 
 class TokenEvent(StrictModel):
@@ -379,9 +437,18 @@ class PromiseUpdatedEvent(StrictModel):
     promise: CaughtPromise
 
 
+class AutoVerifiedEvent(StrictModel):
+    """Emitted when Chronos stays quiet because the promise was already done."""
+
+    type: Literal["AUTO_VERIFIED_SILENT"] = "AUTO_VERIFIED_SILENT"
+    promise: CaughtPromise
+    verification_note: str = ""
+
+
 class DoneEvent(StrictModel):
     type: Literal["DONE"] = "DONE"
     elapsed_ms: int
+    stage_timings_ms: StageTimings = Field(default_factory=StageTimings)
 
 
 class ErrorEvent(StrictModel):

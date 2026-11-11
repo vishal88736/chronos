@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any, AsyncIterator
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, ValidationError
@@ -21,19 +21,23 @@ BASE_DIR = Path(__file__).resolve().parent
 load_dotenv(BASE_DIR / ".env")
 
 import db  # noqa: E402
+from engine.ambient import AmbientContext, extract_terms, fold_into_query, sensor  # noqa: E402
 from engine.context_sieve import ContextSieve, NodeSieveResult  # noqa: E402
 from engine.dag_planner import DAGPlanner, clean_for_search  # noqa: E402
 from engine.hydrator import Hydrator  # noqa: E402
 from engine.promise_daemon import PromiseDaemon  # noqa: E402
 from engine.scraper_pool import ScraperPool  # noqa: E402
 from engine.synthesizer import Synthesizer  # noqa: E402
+from engine.trace import recorder  # noqa: E402
 from events import broker, runtime  # noqa: E402
 from llm_client import LLMClient  # noqa: E402
 from schemas import (  # noqa: E402
+    ActivityLogEntry,
     ChatRequest,
     CaughtPromise,
     ContradictionsEvent,
     DAGNode,
+    DAGPlan,
     DAGPlanEvent,
     DoneEvent,
     ErrorEvent,
@@ -53,6 +57,7 @@ from schemas import (  # noqa: E402
     SimulateMutationResponse,
     SpeculateRequest,
     SpeculateResponse,
+    StageTimings,
     StateResponse,
     TokenEvent,
     Volatility,
@@ -243,6 +248,7 @@ async def _execute_retrieval(
             node_id=node.id,
             status=NodeStatus.SCRAPING,
             detail="retry branch · broadened query" if is_retry else "hedged fetch across top sources",
+            wave=node.wave,
         )
     )
     started = time.perf_counter()
@@ -256,6 +262,7 @@ async def _execute_retrieval(
                 status=NodeStatus.FAILED,
                 latency_ms=max(1, int((time.perf_counter() - started) * 1000)),
                 detail=str(exc)[:240],
+                wave=node.wave,
             )
         )
         empty = NodeSieveResult(
@@ -266,7 +273,7 @@ async def _execute_retrieval(
         )
         return [empty]
 
-    node_result = sieve.sieve_node(node.id, node.query, retrieval.chunks)
+    node_result = sieve.sieve_node(node.id, node.query, retrieval.chunks, wave=node.wave)
     latency = retrieval.latency_ms
     detail_bits: list[str] = []
     if retrieval.cached:
@@ -292,6 +299,7 @@ async def _execute_retrieval(
                 chunks_found=node_result.chunk_count,
                 cached=retrieval.cached,
                 detail=reason,
+                wave=node.wave,
             )
         )
         retry_node = await planner.rewrite_node(node, reason)
@@ -314,7 +322,9 @@ async def _execute_retrieval(
             if node_result.needs_healing:
                 detail_bits.append(node_result.healing_reason or "retry remains weak")
             else:
-                detail_bits.append(f"healed · peak BM25 {node_result.peak_bm25:.2f}")
+                detail_bits.append(
+                    f"healed · peak BM25 {node_result.peak_bm25:.2f} · composite {node_result.peak_composite:.2f}"
+                )
     else:
         status = NodeStatus.CACHED if retrieval.cached else NodeStatus.DONE
         if retrieval.search_results == 0 and retrieval.errors:
@@ -329,7 +339,25 @@ async def _execute_retrieval(
             chunks_found=node_result.chunk_count,
             cached=retrieval.cached,
             detail=" · ".join(detail_bits)[:300] or None,
+            wave=node.wave,
         )
+    )
+    recorder.update_node(
+        {
+            "id": node.id,
+            "query": node.query,
+            "wave": node.wave,
+            "volatility": node.volatility,
+            "depends_on": list(node.depends_on),
+            "status": status.value,
+            "latency_ms": latency,
+            "chunks_found": node_result.chunk_count,
+            "cached": retrieval.cached,
+            "provider": retrieval.provider,
+            "peak_bm25": node_result.peak_bm25,
+            "peak_composite": node_result.peak_composite,
+            "detail": " · ".join(detail_bits)[:300] or None,
+        }
     )
     return [node_result]
 
@@ -389,10 +417,26 @@ async def health() -> dict[str, Any]:
     }
 
 
+@app.get("/api/ambient")
+async def ambient_context() -> dict[str, Any]:
+    """Current OS window / clipboard context, as read locally."""
+    context = await sensor.detect()
+    return {
+        "ambient": context.model_dump(),
+        "terms": extract_terms(context),
+        "supported": sensor.supported,
+        "platform": sensor.system,
+    }
+
+
 @app.post("/api/speculate", response_model=SpeculateResponse)
 async def speculate(payload: SpeculateRequest) -> SpeculateResponse:
+    ambient = await sensor.detect(payload.active_app)
+    ambient_terms = extract_terms(ambient)
     hydration = await hydrator.hydrate_detailed(payload.partial_text)
     predicted = planner.predict_queries(payload.partial_text, hydration.entities)
+    if ambient_terms:
+        predicted = [fold_into_query(query, ambient_terms) for query in predicted]
     entities = [MemoryEntity.model_validate(entity) for entity in hydration.entities]
     if not predicted:
         return SpeculateResponse(
@@ -402,6 +446,7 @@ async def speculate(payload: SpeculateRequest) -> SpeculateResponse:
             saved_ms=0,
             status="IDLE",
             speculative_query=None,
+            active_app=ambient,
         )
 
     primary = predicted[0]
@@ -419,166 +464,338 @@ async def speculate(payload: SpeculateRequest) -> SpeculateResponse:
         saved_ms=saved_ms,
         status="WARMED" if warmed else "WARMING",
         speculative_query=primary,
+        active_app=ambient,
     )
+
+
+@app.get("/api/trace/export")
+async def export_trace() -> JSONResponse:
+    """Download the flight-recorder JSON for the recent turns."""
+    return JSONResponse(
+        content=recorder.export(),
+        headers={
+            "Content-Disposition": 'attachment; filename="chronos-trace.json"',
+        },
+    )
+
+
+@app.get("/api/trace/recent")
+async def recent_trace() -> dict[str, Any]:
+    return {"traces": recorder.recent(10)}
+
+
+@app.get("/api/activity")
+async def activity_log(limit: int = 50) -> dict[str, Any]:
+    entries = await db.list_outbound_activity(limit=limit)
+    return {
+        "activity_log": [
+            ActivityLogEntry.model_validate(entry).model_dump() for entry in entries
+        ]
+    }
 
 
 @app.post("/api/chat/stream")
 async def chat_stream(payload: ChatRequest) -> StreamingResponse:
-    async def event_generator() -> AsyncIterator[str]:
-        started = time.perf_counter()
-        runtime.focus_level = payload.focus_level
-        node_tasks: set[asyncio.Task[list[NodeSieveResult]]] = set()
-        contradiction_task: asyncio.Task[Any] | None = None
-        promise_task: asyncio.Task[Any] | None = None
-        try:
-            yield ": chronos stream opened\n\n"
-            hydration = await hydrator.hydrate_detailed(payload.message)
-            predicted = planner.predict_queries(payload.message, hydration.entities)
-            speculative_hit = any(query in speculation.warmed_queries for query in predicted)
-            yield _sse(
-                HydrationEvent(
-                    entities=[MemoryEntity.model_validate(entity) for entity in hydration.entities],
-                    context=hydration.context,
-                    pronouns_resolved=hydration.pronouns_resolved,
-                    speculative_hit=speculative_hit,
-                    latency_ms=hydration.latency_ms,
-                )
-            )
-
-            plan, planner_kind, planning_ms = await planner.plan(
-                payload.message, hydration.context, hydration.entities
-            )
-            yield _sse(
-                DAGPlanEvent(
-                    nodes=plan.nodes,
-                    planning_ms=planning_ms,
-                    planner="llm" if planner_kind == "llm" else "deterministic",
-                )
-            )
-
-            queue: asyncio.Queue[BaseModel] = asyncio.Queue()
-
-            async def emit(event: BaseModel) -> None:
-                await queue.put(event)
-
-            all_results: list[NodeSieveResult] = []
-            for wave in _wave_groups(plan.nodes):
-                wave_tasks = {
-                    asyncio.create_task(_run_node(node, emit), name=f"chronos-{node.id}")
-                    for node in wave
-                }
-                node_tasks.update(wave_tasks)
-                async for chunk in _drain_wave_events(wave_tasks, queue):
-                    yield chunk
-                wave_outputs = await asyncio.gather(*wave_tasks, return_exceptions=True)
-                for output in wave_outputs:
-                    if isinstance(output, BaseException):
-                        logger.warning("wave node failed: %s", str(output)[:300])
-                        continue
-                    all_results.extend(output)
-                node_tasks.difference_update(wave_tasks)
-
-            metrics = sieve.assemble(all_results)
-            yield _sse(
-                SieveMetricsEvent(
-                    raw_tokens=metrics.raw_tokens,
-                    sieved_tokens=metrics.sieved_tokens,
-                    compression_pct=metrics.compression_pct,
-                    peak_bm25=metrics.peak_bm25,
-                    sources=metrics.sources,
-                )
-            )
-
-            research_query = clean_for_search(payload.message) or payload.message
-            contradiction_task = _track_background(
-                asyncio.create_task(
-                    synthesizer.detect_contradictions(research_query, metrics.sources),
-                    name="chronos-contradictions",
-                )
-            )
-
-            answer = ""
-            async for delta in synthesizer.stream_answer(research_query, metrics.sources):
-                answer += delta
-                yield _sse(TokenEvent(delta=delta))
-            if not answer:
-                fallback = (
-                    "The synthesis stream returned no content. The retrieved evidence is still "
-                    "available in the inspector."
-                )
-                yield _sse(TokenEvent(delta=fallback))
-
-            # Explicit out-of-band task per the promise daemon contract.
-            promise_task = _track_background(
-                asyncio.create_task(
-                    promise_daemon.extract_promise(payload.message, metrics.sources),
-                    name="chronos-promise-extraction",
-                )
-            )
-
-            contradiction_items = []
-            if contradiction_task is not None:
-                done, _ = await asyncio.wait({contradiction_task}, timeout=8.0)
-                if contradiction_task in done:
-                    try:
-                        contradiction_items = contradiction_task.result()
-                    except Exception as exc:  # noqa: BLE001
-                        logger.warning("contradiction task failed: %s", str(exc)[:240])
-                else:
-                    contradiction_task.cancel()
-                    logger.info("contradiction audit timed out; continuing without conflicts")
-            yield _sse(ContradictionsEvent(items=contradiction_items))
-
-            if promise_task is not None:
-                done, _ = await asyncio.wait({promise_task}, timeout=6.0)
-                if promise_task in done:
-                    try:
-                        caught_promise, is_duplicate = promise_task.result()
-                    except Exception as exc:  # noqa: BLE001
-                        logger.warning("promise extraction failed: %s", str(exc)[:240])
-                        caught_promise, is_duplicate = None, False
-                    if caught_promise is not None and not is_duplicate:
-                        try:
-                            yield _sse(
-                                PromiseCaughtEvent(promise=CaughtPromise.model_validate(caught_promise))
-                            )
-                        except ValidationError as exc:
-                            logger.warning("invalid caught promise payload: %s", exc)
-                else:
-                    logger.info(
-                        "promise extraction still running after 6s; it will publish on /api/nudges/stream"
-                    )
-
-            _track_background(
-                asyncio.create_task(
-                    hydrator.extract_and_persist_entities(payload.message),
-                    name="chronos-memory-writeback-post",
-                )
-            )
-            yield _sse(DoneEvent(elapsed_ms=max(1, int((time.perf_counter() - started) * 1000))))
-        except asyncio.CancelledError:
-            logger.info("chat stream disconnected by client")
-            raise
-        except Exception as exc:  # noqa: BLE001 - always end with SSE error, never dangling HTML
-            logger.exception("chat stream failed")
-            yield _sse(ErrorEvent(message=f"{type(exc).__name__}: {str(exc)[:400]}"))
-        finally:
-            for task in list(node_tasks):
-                task.cancel()
-            if node_tasks:
-                await asyncio.gather(*node_tasks, return_exceptions=True)
-            # A disconnected browser should not leave the contradiction audit
-            # and the promise extraction running in the background.
-            for task in (contradiction_task, promise_task):
-                if task is not None and not task.done():
-                    task.cancel()
-                    await asyncio.gather(task, return_exceptions=True)
-
     return StreamingResponse(
-        event_generator(),
+        _turn_generator(payload.message, payload.focus_level, payload.active_app),
         media_type="text/event-stream",
         headers=_sse_headers(),
     )
+
+
+@app.get("/api/chat/stream")
+async def chat_stream_get(
+    message: str = Query(..., min_length=1, max_length=8000),
+    focus_level: int = Query(2),
+    active_app: str | None = Query(None, max_length=400),
+) -> StreamingResponse:
+    """Native-EventSource friendly entry point.
+
+    The browser's `EventSource` can only issue GET requests, so this mirror of
+    the POST endpoint exists purely so the frontend can rely on the browser's
+    own SSE parser instead of hand-rolling a buffer splitter.
+    """
+    try:
+        focus = focus_level if focus_level in {5, 4, 2, 1} else 2
+    except TypeError:
+        focus = 2
+    return StreamingResponse(
+        _turn_generator(message.strip(), focus, active_app),
+        media_type="text/event-stream",
+        headers=_sse_headers(),
+    )
+
+
+async def _turn_generator(
+    message: str,
+    focus_level: int,
+    active_app: str | None = None,
+) -> AsyncIterator[str]:
+    started = time.perf_counter()
+    runtime.focus_level = focus_level
+    node_tasks: set[asyncio.Task[list[NodeSieveResult]]] = set()
+    contradiction_task: asyncio.Task[Any] | None = None
+    promise_task: asyncio.Task[Any] | None = None
+    stages = StageTimings()
+    try:
+        yield ": chronos stream opened\n\n"
+
+        # ── Ambient context ───────────────────────────────────────────────
+        ambient_started = time.perf_counter()
+        ambient = await sensor.detect(active_app)
+        ambient_terms = extract_terms(ambient)
+        recorder.begin(
+            message=message,
+            focus_level=focus_level,
+            ambient=ambient.model_dump(),
+            active_app=ambient.app,
+        )
+        recorder.note("AMBIENT", {"app": ambient.app, "title": ambient.title, "terms": ambient_terms})
+
+        # ── Hydration ─────────────────────────────────────────────────────
+        hydration = await hydrator.hydrate_detailed(message)
+        stages.hydration = hydration.latency_ms
+        recorder.set_stage("hydration", stages.hydration)
+
+        predicted = planner.predict_queries(message, hydration.entities)
+        speculative_hit = any(query in speculation.warmed_queries for query in predicted)
+        yield _sse(
+            HydrationEvent(
+                entities=[MemoryEntity.model_validate(entity) for entity in hydration.entities],
+                context=hydration.context,
+                pronouns_resolved=hydration.pronouns_resolved,
+                speculative_hit=speculative_hit,
+                latency_ms=hydration.latency_ms,
+                active_app=ambient,
+            )
+        )
+
+        # ── Planning ─────────────────────────────────────────────────────
+        plan_started = time.perf_counter()
+        plan, planner_kind, planning_ms = await planner.plan(
+            message, hydration.context, hydration.entities
+        )
+        # Ambient terms are folded into the *queries*, never into the answer,
+        # so the user's private working context never reaches a search engine.
+        plan = _fold_ambient_into_plan(plan, ambient_terms)
+        stages.dag_plan = max(planning_ms, int((time.perf_counter() - plan_started) * 1000))
+        recorder.set_stage("dag_plan", stages.dag_plan)
+        recorder.note("DAG_PLAN", {"planner": planner_kind, "nodes": len(plan.nodes)})
+        for node in plan.nodes:
+            recorder.update_node(
+                {
+                    "id": node.id,
+                    "query": node.query,
+                    "wave": node.wave,
+                    "volatility": node.volatility,
+                    "depends_on": list(node.depends_on),
+                    "status": "PENDING",
+                }
+            )
+        yield _sse(
+            DAGPlanEvent(
+                nodes=plan.nodes,
+                planning_ms=stages.dag_plan,
+                planner="llm" if planner_kind == "llm" else "deterministic",
+            )
+        )
+
+        queue: asyncio.Queue[BaseModel] = asyncio.Queue()
+
+        async def emit(event: BaseModel) -> None:
+            await queue.put(event)
+
+        all_results: list[NodeSieveResult] = []
+        wave_one_nodes: list[DAGNode] = list(plan.nodes)
+        wave_one_chunks: list[dict[str, Any]] = []
+        scrape_started = time.perf_counter()
+
+        # ── Wave 1: independent branches ─────────────────────────────────
+        for wave in _wave_groups(plan.nodes):
+            wave_tasks = {
+                asyncio.create_task(_run_node(node, emit), name=f"chronos-{node.id}")
+                for node in wave
+            }
+            node_tasks.update(wave_tasks)
+            async for chunk in _drain_wave_events(wave_tasks, queue):
+                yield chunk
+            wave_outputs = await asyncio.gather(*wave_tasks, return_exceptions=True)
+            for output in wave_outputs:
+                if isinstance(output, BaseException):
+                    logger.warning("wave node failed: %s", str(output)[:300])
+                    continue
+                all_results.extend(output)
+                for result in output:
+                    wave_one_chunks.extend(result.chunks)
+            node_tasks.difference_update(wave_tasks)
+
+        # ── Wave 2: dependent follow-up interpolated from wave 1 ─────────
+        followup = await planner.build_followup(message, wave_one_nodes, wave_one_chunks, ambient_terms)
+        if followup is not None:
+            recorder.note("WAVE2_PLAN", {"query": followup.query})
+            yield _sse(
+                NodeAddedEvent(
+                    node=followup,
+                    reason="wave 2 · follow-up interpolated from wave 1 findings",
+                )
+            )
+            followup_tasks = {
+                asyncio.create_task(_run_node(followup, emit), name="chronos-q_wave2")
+            }
+            node_tasks.update(followup_tasks)
+            async for chunk in _drain_wave_events(followup_tasks, queue):
+                yield chunk
+            followup_outputs = await asyncio.gather(*followup_tasks, return_exceptions=True)
+            for output in followup_outputs:
+                if isinstance(output, BaseException):
+                    continue
+                all_results.extend(output)
+            node_tasks.difference_update(followup_tasks)
+
+        stages.scrape = int((time.perf_counter() - scrape_started) * 1000)
+        recorder.set_stage("scrape", stages.scrape)
+
+        # ── Sieve ────────────────────────────────────────────────────────
+        sieve_started = time.perf_counter()
+        metrics = sieve.assemble(all_results)
+        stages.sieve = max(1, int((time.perf_counter() - sieve_started) * 1000))
+        recorder.set_stage("sieve", stages.sieve)
+        recorder.note(
+            "SIEVE_METRICS",
+            {
+                "raw_tokens": metrics.raw_tokens,
+                "sieved_tokens": metrics.sieved_tokens,
+                "compression_pct": metrics.compression_pct,
+                "peak_composite_score": metrics.peak_composite_score,
+            },
+        )
+        recorder.current["sources"] = [source.model_dump() for source in metrics.sources] if recorder.current else []
+        yield _sse(
+            SieveMetricsEvent(
+                raw_tokens=metrics.raw_tokens,
+                sieved_tokens=metrics.sieved_tokens,
+                compression_pct=metrics.compression_pct,
+                peak_bm25=metrics.peak_bm25,
+                sources=metrics.sources,
+                peak_composite_score=metrics.peak_composite_score,
+                stage_timings_ms=stages,
+            )
+        )
+
+        research_query = clean_for_search(message) or message
+        contradiction_task = _track_background(
+            asyncio.create_task(
+                synthesizer.detect_contradictions(research_query, metrics.sources),
+                name="chronos-contradictions",
+            )
+        )
+
+        # ── Synthesis ────────────────────────────────────────────────────
+        synthesis_started = time.perf_counter()
+        answer = ""
+        first_token_seen = False
+        async for delta in synthesizer.stream_answer(research_query, metrics.sources):
+            if not first_token_seen:
+                first_token_seen = True
+                stages.ttft = max(1, int((time.perf_counter() - started) * 1000))
+                recorder.set_stage("ttft", stages.ttft)
+            answer += delta
+            yield _sse(TokenEvent(delta=delta))
+        if not answer:
+            fallback = (
+                "The synthesis stream returned no content. The retrieved evidence is still "
+                "available in the inspector."
+            )
+            yield _sse(TokenEvent(delta=fallback))
+        stages.synthesis = int((time.perf_counter() - synthesis_started) * 1000)
+        recorder.set_stage("synthesis", stages.synthesis)
+
+        # Explicit out-of-band task per the promise daemon contract.
+        promise_task = _track_background(
+            asyncio.create_task(
+                promise_daemon.extract_promise(message, metrics.sources),
+                name="chronos-promise-extraction",
+            )
+        )
+
+        contradiction_items = []
+        if contradiction_task is not None:
+            done, _ = await asyncio.wait({contradiction_task}, timeout=8.0)
+            if contradiction_task in done:
+                try:
+                    contradiction_items = contradiction_task.result()
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("contradiction task failed: %s", str(exc)[:240])
+            else:
+                contradiction_task.cancel()
+                logger.info("contradiction audit timed out; continuing without conflicts")
+        recorder.note("CONTRADICTIONS", {"count": len(contradiction_items)})
+        yield _sse(ContradictionsEvent(items=contradiction_items))
+
+        if promise_task is not None:
+            done, _ = await asyncio.wait({promise_task}, timeout=6.0)
+            if promise_task in done:
+                try:
+                    caught_promise, is_duplicate = promise_task.result()
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("promise extraction failed: %s", str(exc)[:240])
+                    caught_promise, is_duplicate = None, False
+                if caught_promise is not None and not is_duplicate:
+                    try:
+                        yield _sse(
+                            PromiseCaughtEvent(promise=CaughtPromise.model_validate(caught_promise))
+                        )
+                    except ValidationError as exc:
+                        logger.warning("invalid caught promise payload: %s", exc)
+            else:
+                logger.info(
+                    "promise extraction still running after 6s; it will publish on /api/nudges/stream"
+                )
+
+        _track_background(
+            asyncio.create_task(
+                hydrator.extract_and_persist_entities(message),
+                name="chronos-memory-writeback-post",
+            )
+        )
+        stages.total = max(1, int((time.perf_counter() - started) * 1000))
+        recorder.set_stage("total", stages.total)
+        recorder.finish(stages.total)
+        yield _sse(DoneEvent(elapsed_ms=stages.total, stage_timings_ms=stages))
+    except asyncio.CancelledError:
+        logger.info("chat stream disconnected by client")
+        raise
+    except Exception as exc:  # noqa: BLE001 - always end with SSE error, never dangling HTML
+        logger.exception("chat stream failed")
+        if recorder.current is not None:
+            recorder.current["errors"].append(str(exc)[:400])
+        yield _sse(ErrorEvent(message=f"{type(exc).__name__}: {str(exc)[:400]}"))
+    finally:
+        for task in list(node_tasks):
+            task.cancel()
+        if node_tasks:
+            await asyncio.gather(*node_tasks, return_exceptions=True)
+        # A disconnected browser should not leave the contradiction audit
+        # and the promise extraction running in the background.
+        for task in (contradiction_task, promise_task):
+            if task is not None and not task.done():
+                task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
+
+
+def _fold_ambient_into_plan(plan: DAGPlan, ambient_terms: list[str]) -> DAGPlan:
+    """Fold ambient OS terms into the search queries of wave 1.
+
+    The terms only ever reach the *query*; the private context itself is
+    never serialised into a request that a search provider can see.
+    """
+    if not ambient_terms:
+        return plan
+    folded: list[DAGNode] = []
+    for node in plan.nodes:
+        query = fold_into_query(node.query, ambient_terms)
+        folded.append(node.model_copy(update={"query": query}))
+    return plan.model_copy(update={"nodes": folded})
 
 
 @app.get("/api/nudges/stream")
@@ -635,7 +852,9 @@ async def simulate_mutation(payload: SimulateMutationRequest) -> SimulateMutatio
         runtime.focus_level = payload.focus_level
     try:
         result = await promise_daemon.simulate_webpage_mutation(
-            payload.promise_id, runtime.focus_level
+            payload.promise_id,
+            runtime.focus_level,
+            already_completed=payload.already_completed,
         )
     except KeyError:
         raise HTTPException(status_code=404, detail="Promise not found") from None
@@ -648,6 +867,8 @@ async def simulate_mutation(payload: SimulateMutationRequest) -> SimulateMutatio
         focus_level=result["focus_level"],
         nudge=NudgePayload.model_validate(result["nudge"]) if result["nudge"] else None,
         message=result["message"],
+        auto_verified=bool(result.get("auto_verified")),
+        verification_note=result.get("verification_note"),
     )
 
 
@@ -659,6 +880,15 @@ async def resolve_promise(promise_id: str) -> ResolveResponse:
     updated = await db.update_promise(promise_id, status="RESOLVED")
     if updated is None:
         raise HTTPException(status_code=404, detail="Promise not found")
+    # Resolving is itself an outbound signal. Recording it lets the
+    # auto-verifier recognise the same commitment in a later turn.
+    try:
+        await db.log_outbound_activity(
+            f"User fulfilled: {promise['promised_action']} to {promise['recipient']}",
+            kind="resolved",
+        )
+    except Exception as exc:  # noqa: BLE001 - logging must not fail the resolve
+        logger.warning("could not record outbound activity: %s", exc)
     validated = CaughtPromise.model_validate(updated)
     await broker.publish(
         {"type": "PROMISE_UPDATED", "promise": validated.model_dump(mode="json")}
@@ -673,6 +903,7 @@ async def state() -> StateResponse:
     counts = await db.promise_counts()
     providers = scraper.public_info()
     providers["llm"] = llm.available
+    activity = await db.list_outbound_activity(limit=50)
     return StateResponse(
         memory_entities=[MemoryEntity.model_validate(entity) for entity in entities],
         caught_promises=[CaughtPromise.model_validate(promise) for promise in promises],
@@ -681,4 +912,6 @@ async def state() -> StateResponse:
         active_promises=counts["active"],
         queued_promises=counts["QUEUED_QUIET"],
         providers=providers,
+        activity_log=[ActivityLogEntry.model_validate(entry) for entry in activity],
+        auto_verified=counts.get("AUTO_VERIFIED_SILENT", 0),
     )

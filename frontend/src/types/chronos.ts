@@ -8,7 +8,12 @@ export type NodeStatus =
   | "DONE"
   | "FAILED";
 
-export type PromiseStatus = "WATCHING" | "QUEUED_QUIET" | "NUDGED" | "RESOLVED";
+export type PromiseStatus =
+  | "WATCHING"
+  | "QUEUED_QUIET"
+  | "NUDGED"
+  | "AUTO_VERIFIED_SILENT"
+  | "RESOLVED";
 
 export type FocusLevel = 5 | 4 | 2 | 1;
 
@@ -25,6 +30,7 @@ export interface DAGNode {
   depends_on: string[];
   volatility: Volatility;
   retry_of?: string | null;
+  wave: number;
 }
 
 export interface DAGNodeView extends DAGNode {
@@ -43,6 +49,30 @@ export interface SourceChunk {
   text: string;
   bm25_score: number;
   token_count: number;
+  domain: string;
+  authority_score: number;
+  freshness_score: number;
+  composite_score: number;
+  wave: number;
+}
+
+export interface AmbientContext {
+  app: string;
+  title: string;
+  selection: string;
+  clipboard: string;
+  source: string;
+  available: boolean;
+}
+
+export interface StageTimings {
+  hydration: number;
+  dag_plan: number;
+  scrape: number;
+  sieve: number;
+  synthesis: number;
+  ttft: number;
+  total: number;
 }
 
 export interface Contradiction {
@@ -68,6 +98,15 @@ export interface CaughtPromise {
   draft_artifact: string | null;
   trigger_summary: string | null;
   created_at: number;
+  urgency_score: number;
+  verification_note: string | null;
+}
+
+export interface ActivityLogEntry {
+  id: string;
+  summary: string;
+  created_at: number;
+  kind: string;
 }
 
 export interface NudgePayload {
@@ -88,6 +127,8 @@ export interface StateResponse {
   active_promises: number;
   queued_promises: number;
   providers: Record<string, boolean>;
+  activity_log: ActivityLogEntry[];
+  auto_verified: number;
 }
 
 export interface SpeculateResponse {
@@ -97,6 +138,7 @@ export interface SpeculateResponse {
   saved_ms: number;
   status: "WARMED" | "WARMING" | "IDLE";
   speculative_query: string | null;
+  active_app: AmbientContext | null;
 }
 
 export interface FocusResponse {
@@ -112,6 +154,8 @@ export interface SimulateMutationResponse {
   focus_level: number;
   nudge: NudgePayload | null;
   message: string;
+  auto_verified: boolean;
+  verification_note: string | null;
 }
 
 export interface HydrationEvent {
@@ -121,6 +165,7 @@ export interface HydrationEvent {
   pronouns_resolved: string[];
   speculative_hit: boolean;
   latency_ms: number;
+  active_app: AmbientContext | null;
 }
 
 export interface DAGPlanEvent {
@@ -138,6 +183,7 @@ export interface NodeUpdateEvent {
   chunks_found: number;
   cached: boolean;
   detail?: string | null;
+  wave: number;
 }
 
 export interface NodeAddedEvent {
@@ -153,6 +199,8 @@ export interface SieveMetricsEvent {
   compression_pct: number;
   peak_bm25: number;
   sources: SourceChunk[];
+  peak_composite_score: number;
+  stage_timings_ms: StageTimings;
 }
 
 export interface TokenEvent {
@@ -180,6 +228,12 @@ export interface PromiseUpdatedEvent {
   promise: CaughtPromise;
 }
 
+export interface AutoVerifiedEvent {
+  type: "AUTO_VERIFIED_SILENT";
+  promise: CaughtPromise;
+  verification_note: string;
+}
+
 export interface HelloEvent {
   type: "HELLO";
   focus_level: number;
@@ -189,6 +243,7 @@ export interface HelloEvent {
 export interface DoneEvent {
   type: "DONE";
   elapsed_ms: number;
+  stage_timings_ms: StageTimings;
 }
 
 export interface ErrorEvent {
@@ -207,11 +262,17 @@ export type ChronosEvent =
   | PromiseCaughtEvent
   | NudgeEvent
   | PromiseUpdatedEvent
+  | AutoVerifiedEvent
   | HelloEvent
   | DoneEvent
   | ErrorEvent;
 
-export type NudgeStreamEvent = NudgeEvent | PromiseCaughtEvent | PromiseUpdatedEvent | HelloEvent;
+export type NudgeStreamEvent =
+  | NudgeEvent
+  | PromiseCaughtEvent
+  | PromiseUpdatedEvent
+  | AutoVerifiedEvent
+  | HelloEvent;
 
 export interface ChatMessage {
   id: string;
@@ -234,6 +295,8 @@ export interface SimulationView {
   urgency: number;
   focusLevel: number;
   promiseId: string;
+  autoVerified: boolean;
+  verificationNote: string | null;
 }
 
 export interface PlannerMeta {

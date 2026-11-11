@@ -302,6 +302,143 @@ async def test_extractive_synthesis() -> None:
     check("no hallucinated citation", "src_99" not in answer, answer[:200])
 
 
+# ── authority + freshness composite ──────────────────────────────────────────
+
+
+def test_authority_scores() -> None:
+    print("\n[sieve] domain authority ranking")
+    from engine.context_sieve import authority_score
+
+    check("github is primary", authority_score("https://github.com/a/b") == 0.95)
+    check("apple developer docs are primary", authority_score("https://developer.apple.com/x") == 0.95)
+    check("unknown domain is neutral", authority_score("https://randomblog.example/x") == 0.50)
+    check("aggregators are demoted", authority_score("https://medium.com/@a/b") == 0.35)
+    check("edu is institutional", authority_score("https://mit.edu/x") == 0.75)
+    check("empty url is safe", authority_score("") == 0.40)
+
+
+def test_composite_score() -> None:
+    print("\n[sieve] composite blends relevance, authority and freshness")
+    sieve = ContextSieve()
+    primary = "The latest ScreenCaptureKit release notes for version 15.4 confirm the memory leak fix shipped."
+    spam = "Buy cheap SEO backlinks now, best ranking service, unlimited traffic guaranteed."
+    docs = [
+        {"url": "https://developer.apple.com/notes", "title": "notes", "text": primary + " " * 20},
+        {"url": "https://seoblog.example/promo", "title": "promo", "text": spam + " " * 20},
+    ]
+    result = sieve.sieve_node("q1", "ScreenCaptureKit 15.4 release notes fix", docs)
+    check("composite is computed", result.peak_composite > 0, str(result))
+    check("composite stays on a 0..1 scale", result.peak_composite <= 1.0, str(result.peak_composite))
+    check(
+        "the authoritative source outranks the promo",
+        result.chunks[0]["url"].endswith("developer.apple.com/notes"),
+        str([chunk["url"] for chunk in result.chunks]),
+    )
+
+
+def test_freshness_score() -> None:
+    print("\n[sieve] freshness reacts to time-sensitive language")
+    from engine.context_sieve import freshness_score
+
+    fresh = freshness_score("The latest update fixed it in version 15.4, released this week.")
+    stale = freshness_score("This was archived and deprecated in 2019, end-of-life since then.")
+    check("current language scores higher", fresh > stale, f"{fresh} vs {stale}")
+    check("freshness stays in range", 0.0 <= fresh <= 1.0 and 0.0 <= stale <= 1.0)
+
+
+# ── multi-wave planning ──────────────────────────────────────────────────────
+
+
+async def test_wave_two_followup() -> None:
+    print("\n[planner] wave 2 interpolates wave 1 findings")
+    planner = DAGPlanner(LLMClient())
+    wave_one = [
+        DAGNode(id="q1", query="macOS 15.4 ScreenCaptureKit memory leak status", wave=1),
+        DAGNode(id="q2", query="ScreenCaptureKit memory leak workaround discussion", wave=1),
+    ]
+    chunks = [
+        {
+            "text": "macOS 15.4 beta 3 ships ScreenCaptureKit version 15.4 fix release notes "
+            + "the leak was patched in 15.4. " * 3,
+            "url": "https://developer.apple.com/news/releases/",
+            "domain": "developer.apple.com",
+        }
+    ]
+    followup = await planner.build_followup(
+        "Is the ScreenCaptureKit memory leak fixed?", wave_one, chunks
+    )
+    check("a wave 2 node is produced", followup is not None, "None")
+    if followup is not None:
+        check("wave 2 is tagged wave 2", followup.wave == 2, str(followup))
+        check("wave 2 depends on wave 1", set(followup.depends_on) == {"q1", "q2"}, str(followup))
+        check("wave 2 interpolates the version", "15.4" in followup.query, followup.query)
+
+
+async def test_ambient_sensor() -> None:
+    print("\n[ambient] OS sensor degrades safely")
+    from engine.ambient import AmbientSensor, extract_terms, fold_into_query
+
+    probe = AmbientSensor()
+    context = await probe.detect()
+    check("detection never raises", context is not None)
+    check("context has a source", context.source in {"none", "manual", "macos", "linux"}, context.source)
+
+    manual = await probe.detect("VS Code — screen_capture_manager.swift")
+    check("manual override wins", manual.app.startswith("VS Code"), manual.app)
+    check("manual override is marked available", manual.available is True)
+
+    terms = extract_terms(manual)
+    check("terms are extracted from the title", any("screen_capture" in term for term in terms), str(terms))
+
+    folded = fold_into_query("macOS memory leak status", terms)
+    check("terms fold into the query", "screen_capture" in folded, folded)
+    check("folded query stays bounded", len(folded) <= 600, str(len(folded)))
+
+
+async def test_auto_verification() -> None:
+    print("\n[promises] outbound activity suppresses the nudge")
+    await db.init_db()
+    daemon = PromiseDaemon(LLMClient())
+
+    created = await db.create_promise(
+        {
+            "id": "pm_test_verify",
+            "actor": "You",
+            "recipient": "Rahul",
+            "promised_action": "push the ScreenCaptureKit hotfix PR",
+            "trigger_condition": "Apple 15.4 Beta 3 patches the leak",
+            "watch_url": "https://developer.apple.com/macos-release-notes",
+            "last_dom_hash": daemon._unobserved_hash("pm_test_verify"),
+            "priority": 4,
+            "time_sensitivity": 4,
+            "status": "WATCHING",
+            "draft_artifact": None,
+            "trigger_summary": None,
+            "created_at": 0,
+        }
+    )
+    # Without any outbound activity the gate behaves normally.
+    gate = await daemon.evaluate_nudge_gate(created, 1)
+    check("no activity means a normal nudge", gate["auto_verified"] is False, str(gate))
+
+    await db.log_outbound_activity(
+        "Pushed commit fixing ScreenCaptureKit and messaged Rahul about the PR", kind="commit"
+    )
+    verified = await daemon.evaluate_nudge_gate(created, 1)
+    check("outbound activity auto-verifies", verified["auto_verified"] is True, str(verified))
+    check("auto-verified promises release no nudge", verified["nudge"] is None, str(verified))
+    check(
+        "the promise is closed silently",
+        verified["promise"]["status"] == "AUTO_VERIFIED_SILENT",
+        verified["promise"]["status"],
+    )
+    check(
+        "a verification note explains the silence",
+        bool(verified["promise"]["verification_note"]),
+        str(verified["promise"].get("verification_note")),
+    )
+
+
 async def main() -> int:
     await test_cache_volatility_isolation()
     await test_cache_purge()
@@ -316,6 +453,12 @@ async def main() -> int:
     test_urgency_formula()
     await test_gate_and_duplicate()
     await test_extractive_synthesis()
+    test_authority_scores()
+    test_composite_score()
+    test_freshness_score()
+    await test_wave_two_followup()
+    await test_ambient_sensor()
+    await test_auto_verification()
 
     print(f"\n{'=' * 60}")
     print(f"passed: {len(PASSED)}   failed: {len(FAILED)}")
