@@ -173,6 +173,7 @@ export interface HydrationEvent {
   speculative_hit: boolean;
   latency_ms: number;
   active_app: AmbientContext | null;
+  prior_queries: PriorQuery[];
 }
 
 export interface DAGPlanEvent {
