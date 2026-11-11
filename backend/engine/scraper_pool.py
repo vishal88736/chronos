@@ -30,6 +30,11 @@ STATIC_TTL_SECONDS = 86_400
 VOLATILE_TTL_SECONDS = 300
 MAX_SEARCH_RESULTS = 4
 MAX_PAGE_BYTES = 1_300_000
+# Search latency budget. The package is tried first but is frequently
+# rate-limited by DuckDuckGo; it is capped short so the HTML fallbacks still
+# fit inside the branch budget instead of starving them.
+DDG_PACKAGE_TIMEOUT = 3.0
+DDG_HTML_TIMEOUT = 4.0
 
 _UA = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
@@ -220,7 +225,7 @@ class ScraperPool:
                 await asyncio.gather(*tasks, return_exceptions=True)
 
         try:
-            results = await asyncio.wait_for(self._duckduckgo(query), timeout=7.0)
+            results = await asyncio.wait_for(self._duckduckgo(query), timeout=9.0)
             if results:
                 return results[:MAX_SEARCH_RESULTS], "duckduckgo", errors
             errors.append("DuckDuckGo returned no results")
@@ -229,12 +234,14 @@ class ScraperPool:
         except Exception as exc:  # noqa: BLE001
             errors.append(f"DuckDuckGo: {str(exc)[:240]}")
 
-        # One retry with a short backoff. DuckDuckGo's bot challenge is
-        # frequently transient, and a single failed branch is enough to send
-        # the whole DAG down the self-healing path.
-        await asyncio.sleep(0.35)
+        # One retry, but only against the cheap HTML endpoints. DuckDuckGo's
+        # bot challenge is frequently transient, and a single failed branch is
+        # enough to send the whole DAG down the self-healing path. Re-running
+        # the package here would blow the branch latency budget for very
+        # little extra yield.
+        await asyncio.sleep(0.3)
         try:
-            results = await asyncio.wait_for(self._duckduckgo(query), timeout=7.0)
+            results = await asyncio.wait_for(self._duckduckgo_html(query), timeout=6.0)
             if results:
                 logger.info("duckduckgo recovered on retry for %r", query[:70])
                 return results[:MAX_SEARCH_RESULTS], "duckduckgo", errors
@@ -312,10 +319,10 @@ class ScraperPool:
             from duckduckgo_search import DDGS  # imported lazily to keep startup fast
 
             def _run() -> list[dict[str, Any]]:
-                with DDGS(timeout=5) as ddgs:
+                with DDGS(timeout=DDG_PACKAGE_TIMEOUT) as ddgs:
                     return list(ddgs.text(query, max_results=MAX_SEARCH_RESULTS))
 
-            raw = await asyncio.wait_for(asyncio.to_thread(_run), timeout=6.5)
+            raw = await asyncio.wait_for(asyncio.to_thread(_run), timeout=DDG_PACKAGE_TIMEOUT + 0.5)
         except asyncio.TimeoutError:
             logger.warning("duckduckgo-search package timed out")
             return []
@@ -366,7 +373,7 @@ class ScraperPool:
     ) -> list[SearchResult]:
         try:
             async with httpx.AsyncClient(
-                timeout=6.0, follow_redirects=True, headers=_BASE_HEADERS
+                timeout=DDG_HTML_TIMEOUT, follow_redirects=True, headers=_BASE_HEADERS
             ) as client:
                 if method == "GET":
                     response = await client.get(url, params=params)

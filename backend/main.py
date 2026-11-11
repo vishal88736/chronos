@@ -271,6 +271,8 @@ async def _execute_retrieval(
     detail_bits: list[str] = []
     if retrieval.cached:
         detail_bits.append(f"epistemic cache · {retrieval.cache_age_seconds}s old")
+    else:
+        detail_bits.append(f"via {retrieval.provider}")
     if (
         not retrieval.cached
         and retrieval.urls_attempted > 0

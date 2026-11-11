@@ -380,12 +380,18 @@ async def update_promise(promise_id: str, **fields: Any) -> dict[str, Any] | Non
 async def find_duplicate_promise(
     recipient: str, promised_action: str, watch_url: str
 ) -> dict[str, Any] | None:
+    """Find an equivalent, still-open promise.
+
+    The comparison is case-insensitive: the same commitment phrased with
+    different capitalisation is still the same commitment, and treating it as
+    new would spawn a second watcher on the same page.
+    """
     async with connect() as db:
         row = await (await db.execute(
             """
             SELECT * FROM caught_promises
             WHERE lower(recipient) = lower(?)
-              AND promised_action = ?
+              AND lower(promised_action) = lower(?)
               AND watch_url = ?
               AND status != 'RESOLVED'
             ORDER BY created_at DESC LIMIT 1
