@@ -20,6 +20,7 @@ os.environ.setdefault("CHRONOS_DB_PATH", str(Path(tempfile.gettempdir()) / "chro
 import db  # noqa: E402
 from engine.context_sieve import ContextSieve, NodeSieveResult  # noqa: E402
 from engine.dag_planner import DAGPlanner, clean_for_search  # noqa: E402
+from engine.scraper_pool import ScraperPool  # noqa: E402
 from engine.promise_daemon import PromiseDaemon  # noqa: E402
 from engine.synthesizer import Synthesizer  # noqa: E402
 from llm_client import LLMClient, _extract_json  # noqa: E402
@@ -169,6 +170,14 @@ def test_sieve_age_seconds() -> None:
             young.chunks[0]["freshness_score"] > old.chunks[0]["freshness_score"],
             f"{young.chunks[0]['freshness_score']} vs {old.chunks[0]['freshness_score']}",
         )
+
+
+def test_clean_html_short_version_headings() -> None:
+    print("\n[scraper] short version headings survive html cleaning")
+    html = "<h2>macOS Sequoia 15.4 Beta</h2><p>Read more</p>"
+    _title, text = ScraperPool._clean_html(html)
+    check("short version heading is kept", "macOS Sequoia 15.4 Beta" in text, text)
+    check("short generic paragraph is dropped", "Read more" not in text, text)
 
 
 # ── planner ──────────────────────────────────────────────────────────────────
@@ -542,6 +551,7 @@ async def main() -> int:
     test_sieve_no_evidence()
     test_sieve_weak_evidence()
     test_sieve_age_seconds()
+    test_clean_html_short_version_headings()
     test_planner_deterministic()
     test_planner_rejects_cycles()
     test_clean_for_search()

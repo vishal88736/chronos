@@ -854,10 +854,18 @@ class ScraperPool:
 
         text_blocks: list[str] = []
         seen: set[str] = set()
-        for tag in soup.find_all(["p", "li", "pre", "code", "h1", "h2", "h3", "blockquote", "td"]):
+        for tag in soup.find_all(["p", "li", "pre", "code", "h1", "h2", "h3", "blockquote", "td", "time"]):
             block = " ".join(tag.get_text(" ", strip=True).split())
-            if len(block) < 35 or block in seen:
+            if block in seen:
                 continue
+            is_heading_or_time = tag.name in ("h1", "h2", "h3", "time")
+            if len(block) < 35:
+                if not (
+                    is_heading_or_time
+                    and len(block) >= 8
+                    and re.search(r"\b(?:v?\d+\.\d+(?:\.\d+)?|20\d{2})\b", block, re.IGNORECASE)
+                ):
+                    continue
             seen.add(block)
             text_blocks.append(block)
             if sum(len(item) for item in text_blocks) > 60_000:

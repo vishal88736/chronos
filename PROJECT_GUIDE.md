@@ -154,8 +154,8 @@ passes narrow props down to presentational children.
 │   ├── requirements.txt
 │   ├── .env.example
 │   ├── tests
-│   │   ├── test_engine.py       # 76 engine-level checks
-│   │   └── test_api.py          # 61 HTTP-surface checks
+│   │   ├── test_engine.py       # 82 engine-level checks
+│   │   └── test_api.py          # 64 HTTP-surface checks
 │   └── engine
 │       ├── ambient.py           # local window/clipboard sensor
 │       ├── hydrator.py          # entity + pronoun + temporal hydration
@@ -1236,9 +1236,8 @@ The deterministic planner is a real planner, not a stub:
   branch gets the official suffix when volatile and the GitHub/community suffix
   when static, and the secondary branch gets the opposite. If both collapse to
   the same string, the secondary becomes `independent analysis`.
-- Queries longer than 36 words are cut to their first 24 words, then capped at
-  600 characters. (The source comment mentions retaining a high-signal tail,
-  but the implementation keeps only the head.)
+- Queries longer than 36 words keep the first 18 words and the last 6 words
+  (`words[:18] + words[-6:]`), then are capped at 600 characters.
 
 The output is always exactly two nodes in the deterministic path, which satisfies
 `DAGPlan`'s minimum of two and gives wave 1 genuine parallelism.
@@ -1497,10 +1496,9 @@ downgraded.
 
 The result is clamped to `[0, 1]` and rounded to four decimals. A concrete
 version keeps its extra 0.10 even without a date because “fixed in 15.4” is a
-current-state claim. The age bonus is only applied when the caller passes a
-positive age; the sieve currently calls it with the default zero, so freshness
-is textual in practice, while the cache-age path is available for callers that
-have it.
+current-state claim. `sieve_node()` now passes `age_seconds` from epistemic
+cache hits into `freshness_score()`, while live scrapes pass `0`, so cached
+evidence can gain the under-one-hour bonus or lose the over-30-day penalty.
 
 ### 11.5 Global assembly
 
@@ -2041,8 +2039,7 @@ relative to `backend/` unless absolute. Parent directories are created.
 
 ### 14.2 The five tables
 
-The module docstring says “Three tables”, but the schema and the rest of the
-system use **five**. This guide follows the code:
+`backend/db.py` defines and documents these **five** tables:
 
 ```sql
 CREATE TABLE IF NOT EXISTS memory_entities (
@@ -2299,14 +2296,11 @@ current pointer. `export()` wraps the ring in an object with `tool`, `version`,
 
 The orchestrator writes ambient, hydration latency, the DAG-plan event, node
 updates, sieve metrics and sources, ttft, synthesis, contradiction count, total
-and errors. The record reserves `planner`, `planning_ms`, `contradictions` and
-`promise`, but the current code writes the planner kind into the `events` note
-rather than the top-level field, records contradiction **count** in an event
-rather than the item list, and does not assign the caught promise to the trace.
-The UI does not depend on those top-level fields; they are available for a
-future enrichment. The source list, node telemetry, stage budget and ambient
-context — the fields the inspector and exported review actually use — are
-accurate.
+and errors. It also populates the top-level `planner`, `planning_ms`,
+`contradictions`, and `promise` fields on the trace record, and records a
+timestamped `PROMISE_CAUGHT` note in the event timeline when a commitment is
+caught. The source list, node telemetry, stage budget and ambient context — the
+fields the inspector and exported review actually use — are accurate.
 
 ### 16.3 Why an in-process buffer
 
@@ -3203,10 +3197,10 @@ port and `NEXT_PUBLIC_API_BASE`; the CORS regex accepts any localhost port.
 ### 28.4 Automated checks
 
 ```bash
-# engine-level checks (76)
+# engine-level checks (82)
 backend/.venv/bin/python -m tests.test_engine
 
-# HTTP/SSE checks against the ASGI app (61)
+# HTTP/SSE checks against the ASGI app (64)
 backend/.venv/bin/python -m tests.test_api
 
 # strict TypeScript
@@ -3427,38 +3421,29 @@ delta, not from the start of synthesis.
 
 These are properties of the current code, not aspirations.
 
-1. **The database docstring is stale.** `backend/db.py` says “Three tables”, but
-   the schema has five (`memory_entities`, `epistemic_cache`,
-   `caught_promises`, `outbound_activity_log`, `query_history`). This guide
-   follows the schema.
-2. **Trace enrichment is partial.** The record reserves `planner`,
-   `planning_ms`, `contradictions` and `promise`, but the orchestrator currently
-   writes the planner kind into `events`, records only the contradiction
-   *count*, and does not attach the caught promise. The fields the inspector
-   uses — sources, nodes, stages, ambient, errors — are accurate.
-3. **Focus is not persisted.** A backend restart returns to `5` (deep focus).
+1. **Focus is not persisted.** A backend restart returns to `5` (deep focus).
    The frontend loads the process value from `/api/state`.
-4. **Search quality depends on the network.** DuckDuckGo frequently answers
+2. **Search quality depends on the network.** DuckDuckGo frequently answers
    with a bot challenge; the keyless GitHub/Stack Exchange/Wikipedia fallbacks
    are real but can return tangential evidence. Extractive synthesis reports
    that honestly instead of inventing a confirmation.
-5. **The watcher reads text, not a browser.** JavaScript-rendered content that
+3. **The watcher reads text, not a browser.** JavaScript-rendered content that
    never appears in the server HTML will look unchanged. The LLM diff and the
    65% token fallback are proxies, not a headless browser.
-6. **A `NUDGED` promise is terminal until resolved or re-gated.** The watcher
+4. **A `NUDGED` promise is terminal until resolved or re-gated.** The watcher
    selects only `WATCHING` and `QUEUED_QUIET`; this is intentional to avoid
    repeated interruption.
-7. **Auto-verification is generous by design.** Any recipient token or 60% of
+5. **Auto-verification is generous by design.** Any recipient token or 60% of
    action tokens in a recent outbound row suppresses the nudge. The asymmetry
    favours silence over nagging; the verification note and activity list make
    the decision inspectable.
-8. **The contradictory-pair heuristic is narrow.** It looks for explicit
+6. **The contradictory-pair heuristic is narrow.** It looks for explicit
    fixed/open language and shared tokens; unusual phrasing can be missed.
-9. **The default demo promise is lazy.** A fresh database seeds three memory
+7. **The default demo promise is lazy.** A fresh database seeds three memory
    entities only. The Rahul promise is created by the simulator when the vault
    has no actionable promise.
-10. **No authentication, no TLS, no multi-user isolation.** The API is a local
-    development surface. Treat the SQLite file and the trace export as private.
+8. **No authentication, no TLS, no multi-user isolation.** The API is a local
+   development surface. Treat the SQLite file and the trace export as private.
 
 ---
 

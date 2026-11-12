@@ -761,6 +761,10 @@ async def _turn_generator(
                     try:
                         promise_model = CaughtPromise.model_validate(caught_promise)
                         recorder.set_promise(promise_model.model_dump(mode="json"))
+                        recorder.note(
+                            "PROMISE_CAUGHT",
+                            {"id": promise_model.id, "recipient": promise_model.recipient},
+                        )
                         yield _sse(PromiseCaughtEvent(promise=promise_model))
                     except ValidationError as exc:
                         logger.warning("invalid caught promise payload: %s", exc)
