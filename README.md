@@ -14,6 +14,24 @@ The evaluator can drive the whole loop deterministically from the UI in under fi
 **Complete code-level guide:** [PROJECT_GUIDE.md](PROJECT_GUIDE.md) — module-by-module
 architecture, API/SSE contracts, SQLite schema, frontend state controller, testing and limits.
 
+## Screenshots
+
+Chronos ships as a single-page workspace: a calm empty state, a streaming cited answer
+with a live glass-box inspector, and an attention-gated nudge when a watched condition
+changes.
+
+| Empty workspace | Streaming answer + trace |
+|---|---|
+| ![Empty workspace](docs/screenshots/empty-state.png) | ![Streaming answer](docs/screenshots/answer-trace.png) |
+
+| Authority-weighted sieve | Promise daemon |
+|---|---|
+| ![Sources](docs/screenshots/sources.png) | ![Promise daemon](docs/screenshots/queued.png) |
+
+| Urgency-gated nudge | Mobile layout |
+|---|---|
+| ![Nudge pill](docs/screenshots/nudge.png) | ![Mobile](docs/screenshots/mobile.png) |
+
 <p align="center">
   <em>Local memory · self-healing DAG · zero-key search fallback · SSE telemetry · attention-gated nudges</em>
 </p>
