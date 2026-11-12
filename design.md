@@ -1,5 +1,9 @@
 # Chronos — System Design & Architecture
 
+> **Implementation companion:** [PROJECT_GUIDE.md](PROJECT_GUIDE.md) walks the
+> code module by module — wire contracts, database schema, turn orchestration,
+> frontend state controller, verification commands and known limits.
+
 ## 1. Thesis
 
 Standard web-search agents chain linear ReAct loops (`Prompt -> Search -> Scrape -> Summarize`), which introduces high tail latency, single-domain bias, and zero awareness of *why* the user is asking.

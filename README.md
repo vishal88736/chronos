@@ -11,6 +11,9 @@ changes, a pre-staged action draft waits behind a cognitive-load gate.
 
 The evaluator can drive the whole loop deterministically from the UI in under five seconds.
 
+**Complete code-level guide:** [PROJECT_GUIDE.md](PROJECT_GUIDE.md) — module-by-module
+architecture, API/SSE contracts, SQLite schema, frontend state controller, testing and limits.
+
 <p align="center">
   <em>Local memory · self-healing DAG · zero-key search fallback · SSE telemetry · attention-gated nudges</em>
 </p>
@@ -31,8 +34,9 @@ The evaluator can drive the whole loop deterministically from the UI in under fi
   `noscript`, `form` and `aside` tags are removed.
 - **Real BM25** via `rank_bm25` over 120-word chunks with 20-word overlap. The self-healing
   threshold is `τ = 1.5`.
-- **Real SSE**, not polling. Chat runs over a streamed `POST` response and background nudges are
-  pushed over a long-lived `EventSource` connection.
+- **Real SSE**, not polling. Chat runs over a native `EventSource` `GET` stream, background nudges
+  are pushed over a second long-lived `EventSource`, and a `POST`/`fetch` reader remains as the
+  no-`EventSource` fallback.
 - **Real background work** via `asyncio.create_task`: memory writeback and commitment extraction
   run outside the token stream.
 - **Real page watching**: hashed DOM text, a semantic LLM diff, a staged action artifact, and the
@@ -54,7 +58,7 @@ No part of the demo depends on a stub endpoint.
 │  structured answers · citation pills            trace · sources · promises            │
 │  contradiction callouts · nudge draft            hydration · DAG · simulator          │
 │           ▲             │                                ▲              │             │
-│           │ SSE TOKENs  │ POST /api/chat/stream          │ SSE NUDGE    │ POST       │
+│           │ SSE TOKENs  │ GET /api/chat/stream           │ SSE NUDGE    │ POST       │
 └───────────┴─────────────┴────────────────────────────────┴──────────────┴─────────────┘
                                                                          │
 ┌──────────────────────────────── FastAPI (async) ───────────────────────┼─────────────┐
@@ -322,8 +326,9 @@ Open <http://localhost:3002>. For a production build, rebuild after changing the
 cd frontend && npm run build && npm start
 ```
 
-The `chat/stream` endpoint is a POST stream, so the browser reads it with `fetch()` and a
-`ReadableStream`; nudges use the native `EventSource` API on `GET /api/nudges/stream`.
+The browser opens `GET /api/chat/stream` with the native `EventSource` API, so its own SSE parser
+handles framing; a `POST`/`fetch` + `ReadableStream` path is kept for environments without
+`EventSource`. Nudges use a second native `EventSource` on `GET /api/nudges/stream`.
 
 ---
 
@@ -447,8 +452,8 @@ stage timings and the ordered event log.
 | Method | Path | Purpose |
 |---|---|---|
 | `POST` | `/api/speculate` | 400ms-debounced entity resolution and speculative cache warming |
-| `POST` | `/api/chat/stream` | SSE search + planning + scraping + synthesis pipeline |
-| `GET` | `/api/chat/stream` | Same turn over query params, for the browser's native `EventSource` |
+| `GET` | `/api/chat/stream` | Primary chat transport: SSE search + planning + scraping + synthesis via native `EventSource` |
+| `POST` | `/api/chat/stream` | Same SSE turn with a JSON body; used by the `fetch` fallback |
 | `GET` | `/api/nudges/stream` | Long-lived SSE firehose for nudge/promise events |
 | `GET` | `/api/ambient` | Current OS window / clipboard context read locally |
 | `POST` | `/api/focus` | Change focus state and flush eligible `QUEUED_QUIET` promises |
@@ -457,7 +462,7 @@ stage timings and the ordered event log.
 | `GET` | `/api/state` | Full local memory graph + promise vault + focus state |
 | `GET` | `/api/activity` | The outbound activity log used for auto-verification |
 | `GET` | `/api/trace/export` | Flight-recorder JSON for the recent turns |
-| `GET` | `/api/trace/recent` | Compact trace summaries |
+| `GET` | `/api/trace/recent` | Ten most recent turn traces |
 | `GET` | `/api/health` | Engine, provider, and subscription health |
 
 Every JSON key is `snake_case` on both sides of the wire — the Python
