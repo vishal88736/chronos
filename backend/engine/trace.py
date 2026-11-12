@@ -85,6 +85,22 @@ class TraceRecorder:
             return
         self._current["stages"][stage] = int(milliseconds)
 
+    def set_plan_meta(self, planner: str, planning_ms: int) -> None:
+        if self._current is None:
+            return
+        self._current["planner"] = str(planner)
+        self._current["planning_ms"] = int(planning_ms)
+
+    def set_contradictions(self, items: list[dict[str, Any]]) -> None:
+        if self._current is None:
+            return
+        self._current["contradictions"] = list(items)
+
+    def set_promise(self, promise: dict[str, Any] | None) -> None:
+        if self._current is None:
+            return
+        self._current["promise"] = promise
+
     def _elapsed_ms(self) -> int:
         if self._current is None:
             return 0

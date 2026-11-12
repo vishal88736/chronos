@@ -51,12 +51,14 @@ Return strict JSON:
 If there is no genuine contradiction, return {"items": []}."""
 
 _FIXED = re.compile(
-    r"\b(fixed|resolved|patched|mitigated|no longer (?:present|reproducible|an issue)|closed)\b",
+    r"\b(fixed|resolved|patched|mitigated|no longer (?:present|reproducible|an issue)|closed|"
+    r"supported|thread-safe|compatible)\b",
     re.IGNORECASE,
 )
 _OPEN = re.compile(
     r"\b(still (?:open|present|broken|reproducible)|persists?|remains? (?:open|unresolved|broken)|"
-    r"not (?:yet )?fixed|unresolved|unpatched|reproduces?)\b",
+    r"not (?:yet )?fixed|unresolved|unpatched|reproduces?|deprecated|unsupported|incompatible|"
+    r"race condition)\b",
     re.IGNORECASE,
 )
 _TOPIC_STOP = {

@@ -152,6 +152,25 @@ def test_sieve_weak_evidence() -> None:
     check("low-scoring corpus needs healing", result.needs_healing, str(result))
 
 
+def test_sieve_age_seconds() -> None:
+    print("\n[sieve] cache age reaches freshness scoring")
+    sieve = ContextSieve()
+    text = "latency benchmark tail p99 measurement fastapi results " * 12
+    young = sieve.sieve_node(
+        "q1", "latency", [{"url": "https://x.example", "title": "t", "text": text, "age_seconds": 100}]
+    )
+    old = sieve.sieve_node(
+        "q1", "latency", [{"url": "https://x.example", "title": "t", "text": text, "age_seconds": 40 * 86400}]
+    )
+    check("young evidence is fresher", bool(young.chunks) and bool(old.chunks), str(young.chunks))
+    if young.chunks and old.chunks:
+        check(
+            "cache age changes freshness",
+            young.chunks[0]["freshness_score"] > old.chunks[0]["freshness_score"],
+            f"{young.chunks[0]['freshness_score']} vs {old.chunks[0]['freshness_score']}",
+        )
+
+
 # ── planner ──────────────────────────────────────────────────────────────────
 
 
@@ -191,6 +210,16 @@ def test_clean_for_search() -> None:
     )
     check("promise clause removed", "promised" not in cleaned.lower(), cleaned)
     check("research clause kept", "macos" in cleaned.lower(), cleaned)
+
+
+def test_clean_for_search_retains_tail() -> None:
+    print("\n[planner] long queries keep their high-signal tail")
+    words = [f"w{i}" for i in range(40)]
+    query = " ".join(words)
+    cleaned = clean_for_search(query)
+    cleaned_words = cleaned.split()
+    check("leading words are retained", cleaned_words[:3] == words[:3], cleaned)
+    check("final six tail words are retained", cleaned_words[-6:] == words[-6:], cleaned)
 
 
 # ── llm client helpers ───────────────────────────────────────────────────────
@@ -512,9 +541,11 @@ async def main() -> int:
     test_sieve_diversity()
     test_sieve_no_evidence()
     test_sieve_weak_evidence()
+    test_sieve_age_seconds()
     test_planner_deterministic()
     test_planner_rejects_cycles()
     test_clean_for_search()
+    test_clean_for_search_retains_tail()
     test_extract_json()
     test_urgency_formula()
     await test_gate_and_duplicate()

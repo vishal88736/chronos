@@ -230,6 +230,12 @@ async def test_trace_export() -> None:
         payload = response.json()
         check("trace export is a flight recorder", payload.get("tool") == "chronos", str(payload)[:200])
         check("trace export has a trace list", isinstance(payload.get("traces"), list), str(payload)[:200])
+        traces = payload.get("traces") or []
+        if traces:
+            latest = traces[-1]
+            check("latest trace has a planner", latest.get("planner") in ("llm", "deterministic"), str(latest.get("planner")))
+            check("latest trace has non-negative planning time", int(latest.get("planning_ms", -1)) >= 0, str(latest.get("planning_ms")))
+            check("latest trace contradictions is a list", isinstance(latest.get("contradictions"), list), str(latest.get("contradictions")))
 
 
 async def test_auto_verification_simulation() -> None:

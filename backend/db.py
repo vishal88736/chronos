@@ -1,9 +1,11 @@
 """Async SQLite persistence for Chronos.
 
-Three tables, created idempotently on startup:
-  * memory_entities  — the local personal context graph
-  * epistemic_cache  — TTL-scoped, volatility-aware retrieval cache
-  * caught_promises  — the out-of-band promise vault
+Five tables, created idempotently on startup:
+  * memory_entities       — the local personal context graph
+  * epistemic_cache       — TTL-scoped, volatility-aware retrieval cache
+  * caught_promises       — the out-of-band promise vault
+  * outbound_activity_log — outbound completion signals used by auto-verification
+  * query_history         — recent user prompts used for temporal hydration
 
 Every connection is short-lived and WAL-enabled, which keeps the background
 promise daemon from blocking a streaming chat request.

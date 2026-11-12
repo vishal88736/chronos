@@ -593,6 +593,8 @@ async def _turn_generator(
         stages.dag_plan = max(planning_ms, int((time.perf_counter() - plan_started) * 1000))
         recorder.set_stage("dag_plan", stages.dag_plan)
         recorder.note("DAG_PLAN", {"planner": planner_kind, "nodes": len(plan.nodes)})
+        normalized_planner = "llm" if planner_kind == "llm" else "deterministic"
+        recorder.set_plan_meta(normalized_planner, stages.dag_plan)
         for node in plan.nodes:
             recorder.update_node(
                 {
@@ -742,6 +744,9 @@ async def _turn_generator(
                 contradiction_task.cancel()
                 logger.info("contradiction audit timed out; continuing without conflicts")
         recorder.note("CONTRADICTIONS", {"count": len(contradiction_items)})
+        recorder.set_contradictions(
+            [c.model_dump(mode="json") if hasattr(c, "model_dump") else dict(c) for c in contradiction_items]
+        )
         yield _sse(ContradictionsEvent(items=contradiction_items))
 
         if promise_task is not None:
@@ -754,9 +759,9 @@ async def _turn_generator(
                     caught_promise, is_duplicate = None, False
                 if caught_promise is not None and not is_duplicate:
                     try:
-                        yield _sse(
-                            PromiseCaughtEvent(promise=CaughtPromise.model_validate(caught_promise))
-                        )
+                        promise_model = CaughtPromise.model_validate(caught_promise)
+                        recorder.set_promise(promise_model.model_dump(mode="json"))
+                        yield _sse(PromiseCaughtEvent(promise=promise_model))
                     except ValidationError as exc:
                         logger.warning("invalid caught promise payload: %s", exc)
             else:

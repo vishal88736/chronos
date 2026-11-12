@@ -226,6 +226,7 @@ class ContextSieve:
                         "chunk_index": chunk_index,
                         "token_count": estimate_tokens(chunk),
                         "wave": wave,
+                        "age_seconds": int(document.get("age_seconds", 0) or 0),
                     }
                 )
                 result.candidate_tokens += estimate_tokens(chunk)
@@ -278,7 +279,8 @@ class ContextSieve:
         for chunk in scored:
             domain = _domain_of(str(chunk.get("url", "")))
             authority = authority_score(str(chunk.get("url", "")))
-            fresh = freshness_score(str(chunk.get("text", "")))
+            doc_age = int(chunk.get("age_seconds", 0) or 0)
+            fresh = freshness_score(str(chunk.get("text", "")), age_seconds=doc_age)
             chunk["domain"] = domain
             chunk["authority_score"] = authority
             chunk["freshness_score"] = fresh
@@ -332,7 +334,8 @@ class ContextSieve:
             url = str(chunk.get("url", "") or "")
             chunk.setdefault("domain", _domain_of(url))
             chunk.setdefault("authority_score", authority_score(url))
-            chunk.setdefault("freshness_score", freshness_score(str(chunk.get("text", ""))))
+            if not chunk.get("freshness_score") or float(chunk.get("freshness_score", 0.0)) <= 0:
+                chunk["freshness_score"] = freshness_score(str(chunk.get("text", "")), age_seconds=0)
             normalised = (
                 float(chunk.get("bm25_score", 0.0)) / peak_bm25 if peak_bm25 > 0 else 0.0
             )

@@ -199,7 +199,7 @@ class DAGPlanner:
     def _with_suffix(core: str, suffix: str) -> str:
         words = core.split()
         # Keep the head of very long queries but retain the high-signal tail.
-        core_limited = " ".join(words[:24]) if len(words) > 36 else core
+        core_limited = " ".join(words[:18] + words[-6:]) if len(words) > 36 else core
         return f"{core_limited.rstrip(' ?.!')} {suffix}"[:600]
 
     def predict_queries(
@@ -368,6 +368,7 @@ def clean_for_search(raw_query: str) -> str:
     core = re.sub(r"^compare\s+", "", core, flags=re.IGNORECASE).strip()
     # Remove a dangling conjunction left behind by clause removal.
     core = re.sub(r"\s+(and|but|while|because|so)\s*$", "", core, flags=re.IGNORECASE).strip()
-    if len(core) > 320:
-        core = " ".join(core.split()[:48])
-    return core
+    words = core.split()
+    if len(words) > 36:
+        core = " ".join(words[:18] + words[-6:])
+    return core[:600]

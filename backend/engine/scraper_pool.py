@@ -207,10 +207,12 @@ class ScraperPool:
 
         cached = await db.get_cached_query(query, vol)
         if cached is not None:
+            age_seconds = int(cached.get("age_seconds", 0) or 0)
             latency = max(1, int((time.perf_counter() - started) * 1000))
             logger.info("epistemic cache hit for %r (%ds old)", query[:70], cached["age_seconds"])
+            cached_chunks = [{**chunk, "age_seconds": age_seconds} for chunk in cached["chunks"]]
             return RetrievalResult(
-                chunks=list(cached["chunks"]),
+                chunks=cached_chunks,
                 cached=True,
                 latency_ms=latency,
                 provider="epistemic_cache",
@@ -249,6 +251,7 @@ class ScraperPool:
                         "text": text,
                         "provider": result.provider,
                         "fetched": bool(page.get("text")),
+                        "age_seconds": 0,
                     }
                 )
                 if page.get("error"):
@@ -267,6 +270,7 @@ class ScraperPool:
                         "text": result.snippet,
                         "provider": result.provider,
                         "fetched": False,
+                        "age_seconds": 0,
                     }
                 )
                 seen_urls.add(result.url)
